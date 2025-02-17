@@ -47,6 +47,8 @@ Components:
   For PDF, right click and copy the pdf file and press New Chat, the app will handle the rest
   For images and videos the same, right click and copy the pdf file and press New Chat, the app will handle the rest
 
+  Check example videos
+
 
 
   
