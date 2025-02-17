@@ -4,7 +4,7 @@ A  macOS application that brings AI assistance leveraging both Gemini and OpenAI
 
 ## Key Features
 
-- Instant UI with double-shift activation
+- Instant UI with double-right shift activation
 - Support for both Gemini and OpenAI models
 - Modern SwiftUI interface
 - Secure API key storage
@@ -55,7 +55,8 @@ Components:
 
 
   
-- An inline replacement on the source app ( Rewrite in 
+- An inline replacement on the source app ( Rewrite in place)
+   
 In this mode, select the content on and external app, prompt the LLM, and the result will be inline replaced on the external app.
 ![CleanShot 2025-02-17 at 19 34 52@2x](https://github.com/user-attachments/assets/9ec4a427-d4c2-415f-b021-0f33942195b0)
 
