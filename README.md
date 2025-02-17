@@ -50,5 +50,5 @@ Components:
 
 
   
-- An inline relacement on the source app
+- An inline replacement on the source app
 In this mode, select the conent on and external app, prompt the LLM, and the result will be inline replaced on the external app.
