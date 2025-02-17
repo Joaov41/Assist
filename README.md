@@ -41,7 +41,7 @@ A  macOS application that brings AI assistance leveraging both Gemini and OpenAI
 ### 
 
 Components:
-- A regular chat interface with support for text, html, URL, images and audio. 
+- A regular chat interface with support for text, html, URL, images and audio. ( video is only suported by the Gemini models) 
   For URL and PDF the code will extract the content and send to the LLM.
   For URL copy the URL to the clipboard and press New Chat
   For PDF, right click and copy the pdf file and press New Chat, the app will handle the rest
