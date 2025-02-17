@@ -47,6 +47,9 @@ Components:
   For PDF, right click and copy the pdf file and press New Chat, the app will handle the rest
   For images and videos the same, right click and copy the pdf file and press New Chat, the app will handle the rest
 
+![CleanShot 2025-02-17 at 19 37 41@2x](https://github.com/user-attachments/assets/6c9e9dc5-3943-41cc-81e8-bb9a581cc8e6)
+
+
   Check example videos
 
 
@@ -54,3 +57,5 @@ Components:
   
 - An inline replacement on the source app
 In this mode, select the content on and external app, prompt the LLM, and the result will be inline replaced on the external app.
+![CleanShot 2025-02-17 at 19 34 52@2x](https://github.com/user-attachments/assets/9ec4a427-d4c2-415f-b021-0f33942195b0)
+
