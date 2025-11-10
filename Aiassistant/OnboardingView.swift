@@ -165,3 +165,8 @@ struct OnboardingStep {
     let description: String
     let isPermissionStep: Bool
 }
+extension KeyboardShortcuts.Name {
+    /// Defines the name for the main popup shortcut used by KeyboardShortcuts Recorder.
+    /// You can set a default shortcut here if desired.
+    static let showPopup = Self("showPopup", default: .init(.space, modifiers: [.option]))
+}

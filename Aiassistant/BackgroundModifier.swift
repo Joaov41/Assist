@@ -56,29 +56,15 @@ struct WindowBackground: ViewModifier {
 
 struct GlassmorphicBackground: View {
     @Environment(\.colorScheme) var colorScheme
+    @AppStorage("glass_variant") private var glassVariantRaw: Int = 11
+    @State private var cornerRadius: CGFloat = 12
     
     var body: some View {
-        ZStack {
-            // Base color and Gradient overlay in light mode (Dark mode looks good)
-            if (colorScheme == .light){
-                Color(.windowBackgroundColor)
-                    .opacity(0.2)
-                
-                LinearGradient(
-                    colors: [
-                        Color.white.opacity(0.1),
-                        Color.white.opacity(0.2)
-                    ],
-                    startPoint: .topLeading,
-                    endPoint: .bottomTrailing
-                )
-                
-            }
-            
-            // Blur effect
-            Rectangle()
-                .fill(.ultraThinMaterial)
-            
+        LiquidGlassBackground(
+            variant: GlassVariant(rawValue: glassVariantRaw) ?? .v11, 
+            cornerRadius: cornerRadius
+        ) {
+            Color.clear
         }
     }
 }

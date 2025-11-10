@@ -1,0 +1,16 @@
+# macOS
+.DS_Store
+
+# AI assistants local config
+.claude/
+
+# Xcode
+DerivedData/
+build/
+xcuserdata/
+*.xccheckout
+*.moved-aside
+*.xcuserstate
+
+# Swift Package Manager
+.swiftpm/

@@ -7,17 +7,13 @@ struct GeminiConfig: Codable {
 }
 
 enum GeminiModel: String, CaseIterable {
-    case twoproExp = "gemini-2.0-pro-exp-02-05"
-    case twoflashThinking = "gemini-2.0-flash-thinking-exp-01-21"
-    case twoflashnew = "gemini-2.0-flash"
-    case twoflash = "gemini-2.0-flash-exp"
+    case twofivePro = "gemini-2.5-pro"
+    case twofiveFlash = "gemini-flash-latest"
     
     var displayName: String {
         switch self {
-        case .twoproExp: return "Gemini 2.0 PRO Experimental"
-        case .twoflashThinking: return "Gemini 2.0 Thinking"
-        case .twoflashnew: return "Gemini 2.0 Flash"
-        case .twoflash: return "Gemini 2.0 Flash Exp"
+        case .twofivePro: return "Gemini 2.5 Pro"
+        case .twofiveFlash: return "Gemini 2.5 Flash"
         }
     }
 }
@@ -66,135 +62,230 @@ class GeminiProvider: ObservableObject, AIProvider {
             }
         }
         
-        // Check if prompt is requesting image generation
-        let lowercasePrompt = finalPrompt.lowercased()
-        let isImageGenerationRequest = lowercasePrompt.contains("create an image") || 
-                                       lowercasePrompt.contains("generate an image") ||
-                                       lowercasePrompt.contains("draw") ||
-                                       lowercasePrompt.contains("create a picture") ||
-                                       lowercasePrompt.contains("make an image") ||
-                                       lowercasePrompt.contains("generate a picture") ||
-                                       lowercasePrompt.contains("create a diagram") ||
-                                       lowercasePrompt.contains("show me an image") ||
-                                       lowercasePrompt.contains("can you create an image") ||
-                                       lowercasePrompt.contains("can you draw") ||
-                                       lowercasePrompt.contains("can you generate an image") ||
-                                       lowercasePrompt.contains("visualize") ||
-                                       lowercasePrompt.contains("create a visual") ||
-                                       lowercasePrompt.contains("make a picture") ||
-                                       lowercasePrompt.contains("create a photo") ||
-                                       lowercasePrompt.contains("illustrate") ||
-                                       lowercasePrompt.contains("render") ||
-                                       lowercasePrompt.contains("design") ||
-                                       lowercasePrompt.contains("can you show me") ||
-                                       lowercasePrompt.contains("picture of") ||
-                                       lowercasePrompt.contains("edit the image") ||
-                                       lowercasePrompt.contains("modify the image") ||
-                                       lowercasePrompt.contains("change the image") ||
-                                       lowercasePrompt.contains("transform the image") ||
-                                       lowercasePrompt.contains("apply") || 
-                                       lowercasePrompt.contains("similar to this image") ||
-                                       lowercasePrompt.contains("based on this image")
+        // Build normalized prompts for downstream checks
+        let lowercaseFinalPrompt = finalPrompt.lowercased()
+        // Use only the user's words when deciding on image-specific routing to avoid system prompt bleed-through.
+        let lowercaseUserPrompt = userPrompt.lowercased()
+        let condensedUserPrompt = lowercaseUserPrompt
+            .components(separatedBy: CharacterSet.whitespacesAndNewlines)
+            .filter { !$0.isEmpty }
+            .joined(separator: " ")
         
-        // Always use gemini-2.0-flash-exp
-        let modelName = "gemini-2.0-flash-exp"
+        // Check if this is a URL-related prompt (to avoid triggering image generation for URLs)
+        let isURLRelated = lowercaseUserPrompt.contains("http://") || 
+                           lowercaseUserPrompt.contains("https://") ||
+                           lowercaseUserPrompt.contains("www.") ||
+                           lowercaseUserPrompt.hasPrefix("summarize this webpage") ||
+                           lowercaseUserPrompt.hasPrefix("summarize this article") ||
+                           lowercaseUserPrompt.hasPrefix("analyze this webpage") ||
+                           lowercaseUserPrompt.hasPrefix("analyze this url") ||
+                           lowercaseUserPrompt.contains("webpage") ||
+                           lowercaseUserPrompt.contains("website") ||
+                           lowercaseUserPrompt.contains("web page") ||
+                           lowercaseUserPrompt.contains("web site") ||
+                           lowercaseUserPrompt.contains("url") ||
+                           lowercaseUserPrompt.contains("link") ||
+                           lowercaseUserPrompt.contains("site") ||
+                           lowercaseUserPrompt.contains("article") ||
+                           lowercaseUserPrompt.contains("blog") ||
+                           lowercaseUserPrompt.contains("web address") ||
+                           userPrompt.hasPrefix("http") ||
+                           userPrompt.contains("://") ||
+                           lowercaseUserPrompt.hasPrefix("www.")
+        
+        // Check for explicit opt-out instruction
+        let explicitlyPreventImageGen = lowercaseUserPrompt.contains("do not generate images")
+        
+        // Check for the specific follow-up instruction prefix (case-insensitive match)
+        let followUpMarker = "very important: respond based only on the text context and conversation. do not generate or edit images."
+        let isFollowUpWithNoImageIntent = lowercaseFinalPrompt.contains(followUpMarker)
+        
+        func containsExplicitImageGenerationRequest(in text: String) -> Bool {
+            let trimmed = text.trimmingCharacters(in: .whitespaces)
+            if trimmed.isEmpty { return false }
+            
+            let startsWithPhrases = [
+                "image of ",
+                "an image of ",
+                "a picture of ",
+                "picture of ",
+                "photo of ",
+                "a photo of "
+            ]
+            if startsWithPhrases.contains(where: { trimmed.hasPrefix($0) }) {
+                return true
+            }
+            
+            let directPhrases = [
+                "generate an image",
+                "generate a image",
+                "generate image of",
+                "create an image",
+                "create a image",
+                "create image of",
+                "draw an image",
+                "draw a picture",
+                "make an image",
+                "make a picture",
+                "design an image",
+                "render an image",
+                "paint an image",
+                "sketch an image"
+            ]
+            if directPhrases.contains(where: { trimmed.contains($0) }) {
+                return true
+            }
+            
+            let modalPhrases = [
+                "can you generate an image",
+                "can you create an image",
+                "could you generate an image",
+                "could you create an image",
+                "please generate an image",
+                "please create an image",
+                "please draw an image",
+                "please draw a picture"
+            ]
+            if modalPhrases.contains(where: { trimmed.contains($0) }) {
+                return true
+            }
+            
+            let pattern = "\\b(generate|create|draw|make|design|render|paint|sketch)\\b[\\s,.;:-]{0,25}\\b(image|picture|photo|graphic|logo|illustration|portrait|drawing|artwork)\\b"
+            if let regex = try? NSRegularExpression(pattern: pattern, options: []) {
+                let range = NSRange(trimmed.startIndex..<trimmed.endIndex, in: trimmed)
+                if regex.firstMatch(in: trimmed, options: [], range: range) != nil {
+                    return true
+                }
+            }
+            
+            return false
+        }
+        
+        func containsExplicitImageEditRequest(in text: String) -> Bool {
+            let trimmed = text.trimmingCharacters(in: .whitespaces)
+            if trimmed.isEmpty { return false }
+            
+            let directPhrases = [
+                "edit this image",
+                "edit the image",
+                "edit this photo",
+                "edit the photo",
+                "modify this image",
+                "modify the image",
+                "change this image",
+                "change the image",
+                "enhance this image",
+                "enhance the image",
+                "apply a filter",
+                "remove the background"
+            ]
+            if directPhrases.contains(where: { trimmed.contains($0) }) {
+                return true
+            }
+            
+            let pattern = "\\b(edit|modify|change|enhance|retouch|adjust|improve|apply)\\b[\\s,.;:-]{0,25}\\b(image|photo|picture|graphic|logo)\\b"
+            if let regex = try? NSRegularExpression(pattern: pattern, options: []) {
+                let range = NSRange(trimmed.startIndex..<trimmed.endIndex, in: trimmed)
+                if regex.firstMatch(in: trimmed, options: [], range: range) != nil {
+                    return true
+                }
+            }
+            
+            return false
+        }
+        
+        // Use the model name from configuration
+        let modelName = config.modelName
         
         guard let url = URL(string: "https://generativelanguage.googleapis.com/v1beta/models/\(modelName):generateContent?key=\(config.apiKey)") else {
             throw NSError(domain: "GeminiAPI", code: -1, userInfo: [NSLocalizedDescriptionKey: "Invalid URL."])
         }
         
         // Add generation config with image output for image generation requests
+        let thinkingConfig: [String: Any] = ["thinkingBudget": 0]
+        print("Thinking disabled for model \(modelName)")
+        
+        var baseGenerationConfig: [String: Any] = [:]
+        baseGenerationConfig["thinkingConfig"] = thinkingConfig
+        baseGenerationConfig["response_modalities"] = ["TEXT"]
+        
         var requestBody: [String: Any] = [
             "contents": [
                 [
                     "parts": parts
                 ]
-            ]
+            ],
+            "generationConfig": baseGenerationConfig
         ]
         
-        // Detect if this might be an image edit/transformation request based on already having images
-        let isImageEditRequest = !images.isEmpty && (lowercasePrompt.contains("edit") || 
-                                                   lowercasePrompt.contains("modify") || 
-                                                   lowercasePrompt.contains("change") || 
-                                                   lowercasePrompt.contains("transform") ||
-                                                   lowercasePrompt.contains("apply") ||
-                                                   lowercasePrompt.contains("make it") ||
-                                                   lowercasePrompt.contains("similar to this") ||
-                                                   lowercasePrompt.contains("based on this"))
-        
-        // If this is an image generation request
-        if isImageGenerationRequest || isImageEditRequest {
-            print("📸 IMAGE GENERATION/EDIT DETECTED - Using Gemini's image generation capabilities")
+        // --- RESTRUCTURED: Check for follow-up FIRST, then handle image modes if needed --- 
+        if isFollowUpWithNoImageIntent {
+            print("DEBUG: Follow-up detected. Skipping image generation/edit logic.")
+            // Keep the default requestBody which is text-only
+        } else {
+            // --- Image Detection Logic (only runs if NOT a follow-up) ---
+            let isImageGenerationRequest = !isURLRelated &&
+                                           !explicitlyPreventImageGen &&
+                                           containsExplicitImageGenerationRequest(in: condensedUserPrompt)
             
-            // Create more specific prompt based on whether we're editing or creating
-            let imagePrompt: String
-            if isImageEditRequest && !images.isEmpty {
-                imagePrompt = """
-                I have attached an existing image. Please create a new version of this image with the following changes:
-                \(finalPrompt)
+            let isImageEditRequest = !isURLRelated &&
+                                     !explicitlyPreventImageGen &&
+                                     !images.isEmpty &&
+                                     containsExplicitImageEditRequest(in: condensedUserPrompt)
+            
+            // --- Build Image Request Body (only if detected and not a follow-up) ---
+            if isImageGenerationRequest || isImageEditRequest {
+                print("📸 IMAGE GENERATION/EDIT DETECTED - Using Gemini's image generation capabilities")
                 
-                Generate a completely new image incorporating these changes, using the attached image as reference.
-                Create a high-quality, detailed image in your response.
-                """
-            } else {
-                imagePrompt = """
-                Generate an image based on this description: \(finalPrompt)
-                Create a high-quality, detailed image directly in your response.
-                Your response should include the generated image along with any descriptive text.
-                The image should be clear, high-resolution, and accurately represent the request.
-                """
-            }
-            
-            // Structure parts to emphasize the image being edited if applicable
-            var contentParts: [[String: Any]] = []
-            
-            // For image editing, place the image first in the parts array for more emphasis
-            if isImageEditRequest && !images.isEmpty {
-                // Add image parts first
-                for imageData in images {
-                    contentParts.append([
-                        "inline_data": [
-                            "mime_type": "image/jpeg",
-                            "data": imageData.base64EncodedString()
-                        ]
-                    ])
+                let imagePrompt: String
+                if isImageEditRequest && !images.isEmpty {
+                    imagePrompt = """
+                    I have attached an existing image. Please create a new version of this image with the following changes:
+                    \(finalPrompt)
+                    
+                    Generate a completely new image incorporating these changes, using the attached image as reference.
+                    Create a high-quality, detailed image in your response.
+                    """
+                } else {
+                    imagePrompt = """
+                    Generate an image based on this description: \(finalPrompt)
+                    Create a high-quality, detailed image directly in your response.
+                    Your response should include the generated image along with any descriptive text.
+                    The image should be clear, high-resolution, and accurately represent the request.
+                    """
                 }
                 
-                // Then add the text prompt
-                contentParts.append(["text": imagePrompt])
-            } else {
-                // Standard generation - text prompt first
-                contentParts.append(["text": imagePrompt])
-                
-                // Then add any images
-                for imageData in images {
-                    contentParts.append([
-                        "inline_data": [
-                            "mime_type": "image/jpeg",
-                            "data": imageData.base64EncodedString()
-                        ]
-                    ])
+                var contentParts: [[String: Any]] = []
+                if isImageEditRequest && !images.isEmpty {
+                    for imageData in images { contentParts.append(["inline_data": ["mime_type": "image/jpeg", "data": imageData.base64EncodedString()]]) }
+                    contentParts.append(["text": imagePrompt])
+                } else {
+                    contentParts.append(["text": imagePrompt])
+                    for imageData in images { contentParts.append(["inline_data": ["mime_type": "image/jpeg", "data": imageData.base64EncodedString()]]) }
                 }
-            }
-            
-            // Updated requestBody for image generation
-            requestBody = [
-                "contents": [
-                    [
-                        "parts": contentParts,
-                        "role": "user"
-                    ]
-                ],
-                "generationConfig": [
+                
+                // Updated requestBody for image generation
+                var generationConfig: [String: Any] = [
                     "temperature": 1.0,
                     "topP": 0.95,
                     "topK": 64,
                     "maxOutputTokens": 8192,
                     "response_modalities": ["TEXT", "IMAGE"]
                 ]
-            ]
-            
-            print("🖼️ Using image generation request: \(requestBody)")
+                generationConfig["thinkingConfig"] = thinkingConfig
+                
+                requestBody = [
+                    "contents": [
+                        [
+                            "parts": contentParts,
+                            "role": "user"
+                        ]
+                    ],
+                    "generationConfig": generationConfig
+                ]
+                
+                print("🖼️ Using image generation request: \(requestBody)")
+            }
         }
         
         var request = URLRequest(url: url)
@@ -437,7 +528,8 @@ class GeminiProvider: ObservableObject, AIProvider {
             ]
         ]
         
-        let modelName = "gemini-2.0-flash-exp"
+        // Use the model name from configuration
+        let modelName = config.modelName
         
         guard let url = URL(string: "https://generativelanguage.googleapis.com/v1beta/models/\(modelName):generateContent?key=\(config.apiKey)") else {
             throw NSError(domain: "GeminiAPI", code: -1, userInfo: [NSLocalizedDescriptionKey: "Invalid URL."])

@@ -1,129 +1,118 @@
+import SwiftUI // Correct: NOT importimport or SwiftUl
+import AppKit  // Correct: Ensure this line exists
 
-import SwiftUI
-
+// Ensure this class is defined ONLY ONCE, in this file (ResponseWindow.swift).
+// Ensure the definition was DELETED from ResponseView.swift.
 class ResponseWindow: NSWindow {
-    init(title: String, content: String, selectedText: String, option: WritingOption, images: [Data] = []) {
-        // Use larger default size when there are images
-        let windowSize = !images.isEmpty ? NSRect(x: 0, y: 0, width: 800, height: 700) : NSRect(x: 0, y: 0, width: 600, height: 500)
+    // Use a strong reference to prevent premature deallocation
+    var hostingController: NSHostingController<ResponseView>?
+    
+    // Track if cleanup has been performed to avoid double cleanup
+    private var cleanupPerformed = false
+    
+    // Add a delegate reference tracker to help with debugging
+    private weak var delegateTracker: NSWindowDelegate?
+    
+    deinit {
+        print("🔒 ResponseWindow deinit called")
+        if !cleanupPerformed {
+            print("🔒 WARNING: ResponseWindow deinit called before cleanup - performing emergency cleanup")
+            cleanup()
+        }
+    }
+
+    // Create custom initializer for this window type
+    init(with responseView: ResponseView, title: String = "Assistant", size: NSSize? = nil, hasImages: Bool = false) {
+        // Adjust default size for windows containing images
+        let windowSize = size ?? NSSize(width: hasImages ? 600 : 500, height: hasImages ? 600 : 400)
         
         super.init(
-            contentRect: windowSize,
-            styleMask: [.titled, .closable, .resizable, .miniaturizable],
+            contentRect: NSRect(x: 0, y: 0, width: windowSize.width, height: windowSize.height),
+            styleMask: [.titled, .closable, .resizable, .miniaturizable, .fullSizeContentView],
             backing: .buffered,
             defer: false
         )
         
-        // Set a more descriptive title if it's an image
-        if !images.isEmpty && title == "AI Response with Images" {
-            self.title = "🖼️ AI Generated Image"
-        } else {
-            self.title = title
-        }
+        self.title = title
+        self.titlebarAppearsTransparent = true
+        self.isReleasedWhenClosed = false // IMPORTANT: We will handle release manually
         
-        // Ensure minimum size is appropriate for images
-        self.minSize = !images.isEmpty ? NSSize(width: 600, height: 500) : NSSize(width: 400, height: 300)
-        self.isReleasedWhenClosed = false
+        // Configure window appearance for dark mode compatibility
+        self.appearance = NSAppearance(named: .darkAqua)
+        self.titleVisibility = .visible
+        // Add grayish background tint (slightly darker than other windows since it already had 0.5 alpha)
+        self.backgroundColor = NSColor.gray.withAlphaComponent(0.45)
         
-        // Create direct image display for any window containing images
-        if !images.isEmpty {
-            print("Creating custom direct image window...")
-            
-            // Create a robust image view with native AppKit for better compatibility
-            if let firstImage = images.first,
-               let nsImage = NSImage(data: firstImage) {
-                print("Setting image of size: \(nsImage.size.width) x \(nsImage.size.height) to window")
-                
-                // Adjust the image view size based on the image's dimensions
-                let aspectRatio = nsImage.size.width / nsImage.size.height
-                let viewHeight = min(nsImage.size.height, windowSize.height - 70) // Leave space for label
-                let viewWidth = min(nsImage.size.width, viewHeight * aspectRatio)
-                
-                // Create image view with proper sizing
-                let imageView = NSImageView(frame: NSRect(x: 0, y: 0, width: viewWidth, height: viewHeight))
-                imageView.image = nsImage
-                imageView.imageScaling = .scaleProportionallyUpOrDown
-                imageView.imageAlignment = .alignCenter
-                
-                // Enable smooth image scaling
-                imageView.animates = true
-                imageView.allowsCutCopyPaste = true
-                
-                // Make image view background clear to avoid artifacts
-                imageView.wantsLayer = true
-                imageView.layer?.backgroundColor = NSColor.clear.cgColor
-                
-                // Create a scroll view with proper configuration
-                let scrollView = NSScrollView(frame: NSRect(x: 0, y: 40, width: windowSize.width, height: windowSize.height - 70))
-                scrollView.drawsBackground = true
-                scrollView.borderType = .noBorder
-                scrollView.hasVerticalScroller = true
-                scrollView.hasHorizontalScroller = true
-                scrollView.autoresizingMask = [.width, .height]
-                
-                // Configure the document view (image view)
-                imageView.autoresizingMask = [.width, .height]
-                // Make sure the frame is large enough to see the image but not too large
-                let frameWidth = max(viewWidth, scrollView.frame.width)
-                let frameHeight = max(viewHeight, scrollView.frame.height)
-                imageView.frame = NSRect(x: 0, y: 0, width: frameWidth, height: frameHeight)
-                scrollView.documentView = imageView
-                
-                // Create text label for the prompt with better styling
-                let label = NSTextField(frame: NSRect(x: 10, y: 5, width: windowSize.width - 20, height: 30))
-                label.stringValue = "Generated image for: \(content)"
-                label.isEditable = false
-                label.isBordered = false
-                label.backgroundColor = .clear
-                label.textColor = .labelColor
-                label.alignment = .center
-                label.font = NSFont.boldSystemFont(ofSize: 14)
-                label.maximumNumberOfLines = 2
-                label.lineBreakMode = .byTruncatingTail
-                label.preferredMaxLayoutWidth = windowSize.width - 20
-                
-                // Create container view
-                let containerView = NSView(frame: NSRect(origin: .zero, size: windowSize.size))
-                containerView.wantsLayer = true
-                containerView.layer?.backgroundColor = NSColor.windowBackgroundColor.cgColor
-                
-                containerView.addSubview(scrollView)
-                containerView.addSubview(label)
-                
-                self.contentView = containerView
-            } else {
-                print("Falling back to SwiftUI view for image display")
-                // Fall back to SwiftUI view
-                let contentView = ResponseView(
-                    content: content.isEmpty && !images.isEmpty ? "Image generated successfully!" : content,
-                    selectedText: selectedText,
-                    option: option,
-                    images: images
-                )
-                self.contentView = NSHostingView(rootView: contentView)
-            }
-        } else {
-            // Regular text response
-            let contentView = ResponseView(
-                content: content,
-                selectedText: selectedText,
-                option: option,
-                images: images
-            )
-            self.contentView = NSHostingView(rootView: contentView)
-        }
+        // Make windows always appear on top
+        self.level = .floating
+        self.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
         
+        // Create the hosting controller
+        let hostingVC = NSHostingController(rootView: responseView)
+        self.hostingController = hostingVC
+        
+        // Use the hosting view as content
+        let hostingView = hostingVC.view
+        hostingView.frame = NSRect(x: 0, y: 0, width: windowSize.width, height: windowSize.height)
+        hostingView.autoresizingMask = [.width, .height]
+        self.contentView = hostingView
+        
+        // Set minimum size
+        self.minSize = NSSize(width: 350, height: 300)
+        
+        // Center on screen
         self.center()
-        self.setFrameAutosaveName("ResponseWindow")
-        
-        // Log the window creation
-        if !images.isEmpty {
-            print("Created image response window with size: \(windowSize.size.width) x \(windowSize.size.height), image count: \(images.count), image sizes: \(images.map { $0.count })")
+    }
+    
+    // Override the close method to ensure we use WindowManager
+    override func close() {
+        if !cleanupPerformed {
+            print("🔒 ResponseWindow close() called - notifying delegate to handle cleanup")
+            // Let the delegate (WindowManager) handle the cleanup
+            NotificationCenter.default.post(name: NSWindow.willCloseNotification, object: self)
+            super.close()
+        } else {
+            print("🔒 ResponseWindow close() called after cleanup - just closing")
+            super.close()
         }
     }
     
-    override func close() {
-        // Notify WindowManager to clean up
-        WindowManager.shared.removeResponseWindow(self)
-        super.close()
+    // Handle cleanup - called by WindowManager
+    func cleanup() {
+        if cleanupPerformed {
+            print("🔒 ResponseWindow cleanup already performed - skipping")
+            return
+        }
+        
+        print("🔒 ResponseWindow cleanup - START")
+        cleanupPerformed = true
+        
+        // First clear the content view reference
+        if let contentView = self.contentView {
+            let subviews = contentView.subviews
+            for subview in subviews {
+                subview.removeFromSuperview()
+            }
+        }
+        self.contentView = nil
+        
+        // Then release the hosting controller
+        if hostingController != nil {
+            print("🔒 Releasing hosting controller")
+            hostingController = nil
+        }
+        
+        print("🔒 ResponseWindow cleanup - COMPLETE")
     }
+
+    // Required initializers for NSWindow subclass
+    @available(*, unavailable)
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) has not been implemented")
+    }
+
+    // Allow window to become key/main for interaction
+    override var canBecomeKey: Bool { return true }
+    override var canBecomeMain: Bool { return true }
 }
+

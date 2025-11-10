@@ -51,6 +51,11 @@ class AppSettings: ObservableObject {
         didSet { defaults.set(useGradientTheme, forKey: "use_gradient_theme") }
     }
 
+    // Custom Quick Actions
+    @Published var customQuickActions: [String] {
+        didSet { defaults.set(customQuickActions, forKey: "custom_quick_actions") }
+    }
+
     // MARK: - HotKey data
     @Published var hotKeyCode: Int {
         didSet { defaults.set(hotKeyCode, forKey: "hotKey_keyCode") }
@@ -65,8 +70,8 @@ class AppSettings: ObservableObject {
         
         // Load or set defaults
         self.geminiApiKey = defaults.string(forKey: "gemini_api_key") ?? ""
-        let geminiModelStr = defaults.string(forKey: "gemini_model") ?? GeminiModel.twoflash.rawValue
-        self.geminiModel = GeminiModel(rawValue: geminiModelStr) ?? .twoflash
+        let geminiModelStr = defaults.string(forKey: "gemini_model") ?? GeminiModel.twofiveFlash.rawValue
+        self.geminiModel = GeminiModel(rawValue: geminiModelStr) ?? .twofiveFlash
         
         self.openAIApiKey = defaults.string(forKey: "openai_api_key") ?? ""
         self.openAIBaseURL = defaults.string(forKey: "openai_base_url") ?? OpenAIConfig.defaultBaseURL
@@ -78,6 +83,7 @@ class AppSettings: ObservableObject {
         self.shortcutText = defaults.string(forKey: "shortcut") ?? "⌥ Space"
         self.hasCompletedOnboarding = defaults.bool(forKey: "has_completed_onboarding")
         self.useGradientTheme = defaults.bool(forKey: "use_gradient_theme")
+        self.customQuickActions = defaults.stringArray(forKey: "custom_quick_actions") ?? []
 
         // HotKey
         self.hotKeyCode = defaults.integer(forKey: "hotKey_keyCode")

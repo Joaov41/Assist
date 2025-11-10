@@ -18,7 +18,8 @@ class PopupWindow: NSWindow {
         self.titlebarAppearsTransparent = true
         self.titleVisibility = .hidden
         self.level = .floating
-        self.backgroundColor = .clear
+        // Add grayish background tint
+        self.backgroundColor = NSColor.gray.withAlphaComponent(0.35)
         self.isOpaque = false
         
         // Set minimum window size
@@ -35,7 +36,39 @@ class PopupWindow: NSWindow {
     }
     
     func cleanup() {
+        print("PopupWindow cleanup started.")
+        // Explicitly remove the content view first
+        if let contentView = self.contentView {
+            contentView.removeFromSuperview()
+        }
+        // Explicitly nil out references in a specific order
+        contentView = nil
         hostingController = nil
+        print("PopupWindow cleanup completed.")
+    }
+    
+    // Override close to ensure cleanup happens via WindowManager
+    override func close() {
+        // The actual removal and cleanup is handled by WindowManager calling cleanup()
+        // via the delegate method (windowWillClose).
+        print("PopupWindow close() called.")
+        super.close()
+    }
+    
+    // Required initializers for NSWindow subclass
+    @available(*, unavailable)
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) has not been implemented")
+    }
+    
+    // Override canBecomeKey to allow interaction
+    override var canBecomeKey: Bool {
+        return true
+    }
+    
+    // Override canBecomeMain to allow it to be the main window
+    override var canBecomeMain: Bool {
+        return true
     }
 }
 

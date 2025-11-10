@@ -1,318 +1,205 @@
 import SwiftUI
-import MarkdownUI
+import MarkdownUI // Make sure this package is added to your project and imported
 
+// MARK: - Data Model for Chat Messages
+
+// Ensure this struct is defined ONLY ONCE, in this file (ResponseView.swift).
 struct ChatMessage: Identifiable, Equatable {
     let id = UUID()
     let role: String // "user" or "assistant"
     let content: String
-    let images: [Data]
+    let images: [Data] // Ensure Data is known (Foundation)
     let timestamp: Date = Date()
-    
+
     init(role: String, content: String, images: [Data] = []) {
         self.role = role
         self.content = content
         self.images = images
     }
-    
+
+    // Equatable conformance
     static func == (lhs: ChatMessage, rhs: ChatMessage) -> Bool {
-        lhs.id == rhs.id &&
-        lhs.role == rhs.role &&
-        lhs.content == rhs.content &&
-        lhs.timestamp == rhs.timestamp &&
-        lhs.images == rhs.images
+        lhs.id == rhs.id // ID is enough for identity in this context
     }
 }
 
-struct ResponseView: View {
-    @StateObject private var viewModel: ResponseViewModel
-    @Environment(\.colorScheme) var colorScheme
-    @AppStorage("use_gradient_theme") private var useGradientTheme = false
-    @State private var inputText: String = ""
-    @State private var isRegenerating: Bool = false
-    
-    init(content: String, selectedText: String, option: WritingOption, images: [Data] = []) {
-        self._viewModel = StateObject(wrappedValue: ResponseViewModel(
-            content: content,
-            selectedText: selectedText,
-            option: option,
-            images: images
-        ))
-    }
-    
-    var body: some View {
-        VStack(spacing: 0) {
-            // Top toolbar with controls
-            HStack {
-                Button(action: { viewModel.copyContent() }) {
-                    Label(viewModel.showCopyConfirmation ? "Copied!" : "Copy",
-                          systemImage: viewModel.showCopyConfirmation ? "checkmark" : "doc.on.doc")
-                }
-                .animation(.easeInOut, value: viewModel.showCopyConfirmation)
-                
-                Spacer()
-                
-                HStack(spacing: 8) {
-                    Button(action: { viewModel.fontSize = max(10, viewModel.fontSize - 2) }) {
-                        Image(systemName: "minus.magnifyingglass")
-                    }
-                    .disabled(viewModel.fontSize <= 10)
-                    
-                    Button(action: { viewModel.fontSize = 14 }) {
-                        Image(systemName: "arrow.clockwise")
-                    }
-                    
-                    Button(action: { viewModel.fontSize = min(24, viewModel.fontSize + 2) }) {
-                        Image(systemName: "plus.magnifyingglass")
-                    }
-                    .disabled(viewModel.fontSize >= 24)
-                }
-            }
-            .padding()
-            .background(Color(.windowBackgroundColor))
-            
-            // Chat messages area
-            ScrollViewReader { proxy in
-                ScrollView {
-                    LazyVStack(spacing: 16) {
-                        ForEach(viewModel.messages) { message in
-                            ChatMessageView(message: message, fontSize: viewModel.fontSize)
-                                .id(message.id)
-                                .frame(maxWidth: .infinity, alignment: message.role == "user" ? .trailing : .leading)
-                        }
-                    }
-                    .padding()
-                }
-                .onChange(of: viewModel.messages, initial: true) { oldValue, newValue in
-                    if let lastId = newValue.last?.id {
-                        withAnimation {
-                            proxy.scrollTo(lastId, anchor: .bottom)
-                        }
-                    }
-                }
-            }
-            
-            // Input area
-            VStack(spacing: 8) {
-                Divider()
-                
-                HStack(spacing: 8) {
-                    TextField("Ask a follow-up question...", text: $inputText)
-                        .textFieldStyle(.plain)
-                        .appleStyleTextField(
-                            text: inputText,
-                            isLoading: isRegenerating,
-                            onSubmit: sendMessage
-                        )
-                }
-                .padding(.horizontal)
-                .padding(.vertical, 8)
-            }
-            .background(Color(.windowBackgroundColor))
-        }
-        .windowBackground(useGradient: useGradientTheme)
-    }
-    
-    private func sendMessage() {
-        guard !inputText.isEmpty else { return }
-        let question = inputText
-        inputText = ""
-        isRegenerating = true
-        viewModel.processFollowUpQuestion(question) {
-            isRegenerating = false
-        }
-    }
-}
+// MARK: - View Model for ResponseView Logic
 
-struct ChatMessageView: View {
-    
-    let message: ChatMessage
-    let fontSize: CGFloat
-    
-    var body: some View {
-        // If user message is on the right, assistant on the left:
-        HStack(alignment: .top, spacing: 12) {
-            
-            // If it's assistant, push bubble to the left
-            if message.role == "assistant" {
-                bubbleView(role: message.role)
-                Spacer(minLength: 15)
-            } else {
-                Spacer(minLength: 15)
-                bubbleView(role: message.role)
-            }
-        }
-        .padding(.top, 4)
-    }
-    
-    @ViewBuilder
-    private func bubbleView(role: String) -> some View {
-        VStack(alignment: role == "assistant" ? .leading : .trailing, spacing: 2) {
-            VStack(alignment: role == "assistant" ? .leading : .trailing, spacing: 8) {
-                // Text content
-                Markdown(message.content)
-                    .font(.system(size: fontSize))
-                    .textSelection(.enabled)
-                
-                // Directly display placeholder for image generation messages
-                if !message.images.isEmpty && message.content.contains("Image generated") {
-                    Text("🖼️ View generated image in the popup window")
-                        .font(.system(size: fontSize, weight: .medium))
-                        .padding()
-                        .background(Color.blue.opacity(0.1))
-                        .cornerRadius(8)
-                }
-                
-                // Images if any
-                ForEach(0..<message.images.count, id: \.self) { index in
-                    let imageData = message.images[index]
-                    
-                    VStack(spacing: 10) {
-                        Text("📸 Generated Image")
-                            .font(.headline)
-                            .foregroundColor(.primary)
-                            .padding(.top, 5)
-                        
-                        Group {
-                            if let nsImage = NSImage(data: imageData) {
-                                Image(nsImage: nsImage)
-                                    .resizable()
-                                    .aspectRatio(contentMode: .fit)
-                                    .frame(maxWidth: 500, maxHeight: 500)
-                                    .cornerRadius(12)
-                                    .overlay(
-                                        RoundedRectangle(cornerRadius: 12)
-                                            .stroke(Color.gray.opacity(0.3), lineWidth: 1)
-                                    )
-                                    .shadow(radius: 2)
-                                    .background(Color.white.opacity(0.05))
-                                    .colorScheme(.light)
-                            } else {
-                                // Fallback text if image can't be displayed
-                                Text("Image data could not be displayed (Size: \(imageData.count) bytes)")
-                                    .foregroundColor(.red)
-                                    .padding()
-                                    .frame(width: 400, height: 200)
-                                    .background(Color.gray.opacity(0.2))
-                                    .cornerRadius(12)
-                            }
-                        }
-                        .padding(.horizontal, 20)
-                        
-                        Text("Size: \(ByteCountFormatter.string(fromByteCount: Int64(imageData.count), countStyle: .file))")
-                            .font(.caption)
-                            .foregroundColor(.secondary)
-                    }
-                    .padding(.vertical, 12)
-                    .background(Color(.textBackgroundColor).opacity(0.15))
-                    .cornerRadius(16)
-                    .padding(.horizontal, 20)
-                    .padding(.vertical, 10)
-                }
-            }
-            .chatBubbleStyle(isFromUser: message.role == "user")
-            
-            // Time stamp
-            Text(message.timestamp.formatted(.dateTime.hour().minute()))
-                .font(.caption2)
-                .foregroundColor(.secondary)
-                .padding(.bottom, 2)
-        }
-        .frame(maxWidth: 500, alignment: role == "assistant" ? .leading : .trailing)
-    }
-}
-
-extension View {
-    func maxWidth(_ width: CGFloat) -> some View {
-        frame(maxWidth: width)
-    }
-}
-
-// Update ResponseViewModel to handle chat messages
+// Ensure this class is defined ONLY ONCE, in this file (ResponseView.swift).
 final class ResponseViewModel: ObservableObject {
     @Published var messages: [ChatMessage] = []
     @Published var fontSize: CGFloat = 14
     @Published var showCopyConfirmation: Bool = false
+    @Published var isProcessingFollowUp: Bool = false // Track follow-up state
+
+    let initialSelectedText: String
+    let initialOption: WritingOption // Ensure WritingOption enum is defined and accessible
+
+    // Keep a weak reference to the AppState singleton
+    private weak var appStateRef: AppState?
     
-    let selectedText: String
-    let option: WritingOption
+    // Add a dedicated cancellation token for cleanup
+    private var cancellationTask: Task<Void, Never>?
     
+    deinit {
+        print("🗑️ ResponseViewModel deinit")
+        // Cancel any pending tasks
+        cancellationTask?.cancel()
+    }
+
     init(content: String, selectedText: String, option: WritingOption, images: [Data] = []) {
-        self.selectedText = selectedText
-        self.option = option
-        
-        // Initialize with the first message
+        self.initialSelectedText = selectedText
+        self.initialOption = option
+        self.appStateRef = AppState.shared
+
+        // Debug log to check initialSelectedText content
+        print("DEBUG: Initializing ResponseViewModel. initialSelectedText length: \(selectedText.count)")
+        if selectedText.count > 100 {
+            let snippet = selectedText.prefix(100)
+            print("DEBUG: initialSelectedText snippet: \(snippet)...")
+        } else {
+            print("DEBUG: initialSelectedText: \(selectedText)")
+        }
+
+        // Initialize with the first assistant message
         self.messages.append(ChatMessage(
             role: "assistant",
             content: content,
             images: images
         ))
+        print("ResponseViewModel initialized.")
     }
-    
+
     func processFollowUpQuestion(_ question: String, completion: @escaping () -> Void) {
-        // Add user message
-        DispatchQueue.main.async {
-            self.messages.append(ChatMessage(
-                role: "user",
-                content: question
-            ))
+        let trimmedQuestion = question.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedQuestion.isEmpty else {
+            completion()
+            return
         }
+
+        // Add user message immediately
+        let userMessage = ChatMessage(role: "user", content: trimmedQuestion)
+        DispatchQueue.main.async { [weak self] in
+            guard let self = self else { return }
+            self.messages.append(userMessage)
+            self.isProcessingFollowUp = true // Start processing indicator
+        }
+
+        // Cancel any previous task
+        cancellationTask?.cancel()
         
-        Task {
-            do {
-                // Build conversation history
-                let conversationHistory = messages.map { message in
-                    return "\(message.role == "user" ? "User" : "Assistant"): \(message.content)"
-                }.joined(separator: "\n\n")
-                
-                // Create prompt with context
-                let contextualPrompt = """
-                Previous conversation:
-                \(conversationHistory)
-                
-                User's new question: \(question)
-                
-                Respond to the user's question while maintaining context from the previous conversation.
-                """
-                
-                let response = try await AppState.shared.activeProvider.processText(
-                    systemPrompt: """
-                    You are a writing and coding assistant. Your sole task is to respond to the user's instruction thoughtfully and comprehensively.
-                    If the instruction is a question, provide a detailed answer. But always return the best and most accurate answer and not different options. 
-                    If it's a request for help, provide clear guidance and examples where appropriate. Make sure to use the language used or specified by the user instruction.
-                    Use Markdown formatting to make your response more readable.
-                    """,
-                    userPrompt: contextualPrompt,
-                    images: AppState.shared.selectedImages,
-                    videos: AppState.shared.selectedVideos
-                )
-                
-                DispatchQueue.main.async {
-                    self.messages.append(ChatMessage(
-                        role: "assistant",
-                        content: response.text,
-                        images: response.images
-                    ))
+        // Create a new task
+        cancellationTask = Task { [weak self] in
+            guard let self = self,
+                  let appState = self.appStateRef else {
+                await MainActor.run {
                     completion()
                 }
+                return
+            }
+            
+            do {
+                // Create a local copy of messages to avoid any potential thread safety issues
+                let messagesSnapshot = await MainActor.run {
+                    return self.messages
+                }
+                
+                // Build conversation history
+                let contextHeader = "Original Context:\n---\n\(self.initialSelectedText)\n---\n\nFollow-up Conversation:\n---"
+                let preventImageInstruction = "VERY IMPORTANT: Respond based only on the text context and conversation. DO NOT generate or edit images.\n\n"
+                let conversationHistory = messagesSnapshot.map { msg in
+                    "\(msg.role.capitalized): \(msg.content)"
+                }.joined(separator: "\n\n")
+                
+                let combinedPrompt = "\(preventImageInstruction)\(contextHeader)\n\(conversationHistory)"
+
+                // Debug log full conversation history length
+                print("DEBUG: Full conversationHistory length: \(conversationHistory.count)")
+
+                // Use the active provider from AppState
+                let response = try await appState.activeProvider.processText(
+                    systemPrompt: self.initialOption.systemPrompt,
+                    userPrompt: combinedPrompt,
+                    images: [],
+                    videos: []
+                )
+
+                let assistantMessage = ChatMessage(
+                    role: "assistant",
+                    content: response.text,
+                    images: response.images
+                )
+
+                // Check if task was cancelled
+                if Task.isCancelled {
+                    print("Follow-up task was cancelled")
+                    await MainActor.run {
+                        self.isProcessingFollowUp = false
+                        completion()
+                    }
+                    return
+                }
+
+                // Update UI on main thread
+                await MainActor.run {
+                    guard !Task.isCancelled else { 
+                        self.isProcessingFollowUp = false
+                        completion()
+                        return 
+                    }
+                    self.messages.append(assistantMessage)
+                    self.isProcessingFollowUp = false
+                    completion()
+                    print("Follow-up processed.")
+                }
             } catch {
-                #if DEBUG
-                print("Error processing follow-up: \(error)")
-                #endif
-                completion()
+                if Task.isCancelled {
+                    print("Follow-up task was cancelled during error handling")
+                    await MainActor.run {
+                        self.isProcessingFollowUp = false
+                        completion()
+                    }
+                    return
+                }
+                
+                let errorMessage = "Error processing follow-up: \(error.localizedDescription)"
+                let errorChatMessage = ChatMessage(role: "assistant", content: errorMessage)
+                print(errorMessage)
+                
+                // Update UI on main thread
+                await MainActor.run {
+                    guard !Task.isCancelled else { 
+                        self.isProcessingFollowUp = false
+                        completion()
+                        return 
+                    }
+                    self.messages.append(errorChatMessage)
+                    self.isProcessingFollowUp = false
+                    completion()
+                }
             }
         }
     }
-    
-    func clearConversation() {
-        messages.removeAll()
-    }
-    
-    func copyContent() {
-        // Concatenate all messages in the conversation
-        let conversationText = messages.map { message in
-            return "\(message.role.capitalized): \(message.content)" // Format each message with role
-        }.joined(separator: "\n\n") // Join messages with double newlines for readability
 
+    func clearConversation() {
+        // Keep only the initial assistant message if needed, or clear all
+        if let firstMessage = messages.first, firstMessage.role == "assistant" {
+            messages = [firstMessage]
+        } else {
+            messages.removeAll()
+        }
+        print("ResponseViewModel conversation cleared/reset.")
+    }
+
+    func copyContent() {
+        // Concatenate all assistant messages for copying
+        let conversationText = messages.filter { $0.role == "assistant" }
+                                       .map { $0.content }
+                                       .joined(separator: "\n\n---\n\n") // Separator between messages
+
+        if conversationText.isEmpty { return }
+
+        // Ensure NSPasteboard is known (AppKit)
         NSPasteboard.general.clearContents()
         NSPasteboard.general.setString(conversationText, forType: .string)
 
@@ -320,5 +207,318 @@ final class ResponseViewModel: ObservableObject {
         DispatchQueue.main.asyncAfter(deadline: .now() + 2) {
             self.showCopyConfirmation = false
         }
+        print("Assistant content copied.")
     }
 }
+
+
+// MARK: - Main Response View
+
+// Ensure this struct is defined ONLY ONCE, in this file (ResponseView.swift).
+struct ResponseView: View {
+    // Use @StateObject because ResponseView *owns* this specific instance of the ViewModel
+    @StateObject private var viewModel: ResponseViewModel
+    @Environment(\.colorScheme) var colorScheme
+    @AppStorage("use_gradient_theme") private var useGradientTheme = false
+    @AppStorage("theme_style") private var themeStyle: String = "standard"
+    @AppStorage("glass_variant") private var glassVariantRaw: Int = 11
+    @State private var inputText: String = ""
+    
+    // New property for top inset (for title bar space)
+    var contentTopInset: CGFloat = 0
+    
+    // Public method to check if this view contains images
+    var hasImages: Bool {
+        return viewModel.messages.first?.images.isEmpty == false
+    }
+
+    // Initializer to create the ViewModel
+    init(content: String, selectedText: String, option: WritingOption, images: [Data] = [], contentTopInset: CGFloat = 0) {
+        // Create the ViewModel instance here and assign it to the @StateObject wrapper
+        self._viewModel = StateObject(wrappedValue: ResponseViewModel(
+            content: content,
+            selectedText: selectedText,
+            option: option,
+            images: images
+        ))
+        self.contentTopInset = contentTopInset
+    }
+
+    var body: some View {
+        ZStack {
+            // Background - use liquid glass if theme is set
+            Group {
+                if themeStyle == "glass" {
+                    LiquidGlassBackground(
+                        variant: GlassVariant(rawValue: glassVariantRaw) ?? .v11,
+                        cornerRadius: 0
+                    ) {
+                        Color.clear
+                    }
+                    .ignoresSafeArea()
+                } else {
+                    // Background gradient to match the quick actions window
+                    LinearGradient(
+                        gradient: Gradient(colors: [
+                            Color(red: 0.1, green: 0.12, blue: 0.15),
+                            Color(red: 0.15, green: 0.18, blue: 0.22)
+                        ]),
+                        startPoint: .topLeading,
+                        endPoint: .bottomTrailing
+                    )
+                    .opacity(0.9)
+                    .ignoresSafeArea()
+                }
+            }
+            
+            VStack(spacing: 0) {
+                // Add spacing for the title bar if needed
+                if contentTopInset > 0 {
+                    Spacer()
+                        .frame(height: contentTopInset)
+                }
+                
+                // Top toolbar
+                HStack {
+                    Button(action: { viewModel.copyContent() }) {
+                        Label(viewModel.showCopyConfirmation ? "Copied!" : "Copy Response",
+                              systemImage: viewModel.showCopyConfirmation ? "checkmark" : "doc.on.doc")
+                    }
+                    .glassButtonStyle(variant: .v8)
+                    .animation(.easeInOut, value: viewModel.showCopyConfirmation)
+                    .help("Copy assistant's responses to clipboard")
+
+                    Spacer()
+
+                    HStack(spacing: 8) {
+                        Button(action: { viewModel.fontSize = max(10, viewModel.fontSize - 2) }) {
+                            Image(systemName: "minus.magnifyingglass")
+                        }
+                        .glassButtonStyle(variant: .v8)
+                        .disabled(viewModel.fontSize <= 10)
+                        .help("Decrease font size")
+
+                        Button(action: { viewModel.fontSize = 14 }) {
+                            Image(systemName: "arrow.clockwise")
+                        }
+                        .glassButtonStyle(variant: .v8)
+                        .help("Reset font size")
+
+                        Button(action: { viewModel.fontSize = min(24, viewModel.fontSize + 2) }) {
+                            Image(systemName: "plus.magnifyingglass")
+                        }
+                        .glassButtonStyle(variant: .v8)
+                        .disabled(viewModel.fontSize >= 24)
+                        .help("Increase font size")
+                    }
+                }
+                .padding()
+
+                // Chat messages area
+                ScrollViewReader { proxy in
+                    ScrollView {
+                        LazyVStack(alignment: .leading, spacing: 16) { // Ensure alignment is leading
+                            ForEach(viewModel.messages) { message in
+                                ChatMessageView(message: message, fontSize: viewModel.fontSize) // Ensure ChatMessageView is defined
+                                    .id(message.id) // Assign ID for scrolling
+                                    .padding(.horizontal) // Add horizontal padding to messages
+                            }
+                            // Show typing indicator if processing follow-up
+                            if viewModel.isProcessingFollowUp {
+                                 HStack {
+                                     ProgressView()
+                                         .progressViewStyle(.circular)
+                                         .scaleEffect(0.6)
+                                         .tint(Color.white.opacity(0.8))
+                                     Text("Assistant is thinking...")
+                                         .font(.caption)
+                                         .fontWeight(.semibold)
+                                         .foregroundColor(.white.opacity(0.8))
+                                     Spacer() // Pushes indicator left
+                                 }
+                                 .padding(.horizontal)
+                                 .padding(.top, 8)
+                                 .id("typingIndicator") // Give indicator an ID if needed for scrolling
+                            }
+                        }
+                    }
+                    .onChange(of: viewModel.messages.count) { _, _ in // Use count for reliable trigger
+                        // Scroll to bottom when message count changes
+                        let lastId = viewModel.isProcessingFollowUp ? "typingIndicator" : viewModel.messages.last?.id as (any Hashable)?
+                        if let idToScroll = lastId {
+                            proxy.scrollTo(idToScroll, anchor: .bottom)
+                        }
+                    }
+                }
+
+                // Input area
+                VStack(spacing: 0) { // Use zero spacing for tight layout
+                    Divider()
+                        .background(Color.gray.opacity(0.3))
+
+                    HStack(spacing: 8) {
+                        TextField("Ask a follow-up question...", text: $inputText, axis: .vertical) // Allow vertical expansion
+                            .textFieldStyle(.plain)
+                            .lineLimit(1...5) // Allow up to 5 lines
+                            .padding(EdgeInsets(top: 8, leading: 10, bottom: 8, trailing: 10)) // Adjust padding
+                            .background(Color.black.opacity(0.15)
+                                .overlay(.ultraThinMaterial.opacity(0.7))
+                                .overlay(Color.black.opacity(0.05)))
+                            .cornerRadius(8)
+                            .onSubmit(sendMessage) // Send on Return key
+                            .disabled(viewModel.isProcessingFollowUp) // Disable while processing
+                            .foregroundColor(.white.opacity(0.9))
+
+                        Button(action: sendMessage) {
+                            Image(systemName: "arrow.up.circle.fill")
+                                .resizable()
+                                .aspectRatio(contentMode: .fit)
+                                .frame(width: 24, height: 24)
+                                .symbolRenderingMode(.multicolor)
+                        }
+                        .glassButtonStyle(variant: .v10, cornerRadius: 12)
+                        .disabled(inputText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || viewModel.isProcessingFollowUp) // Disable if empty or processing
+                        .keyboardShortcut(.return, modifiers: []) // Allow sending with Enter
+                    }
+                    .padding(.horizontal)
+                    .padding(.vertical, 8)
+                    .background(Color.black.opacity(0.15))
+                }
+            }
+            .clipShape(RoundedRectangle(cornerRadius: 12))
+            .shadow(color: Color.black.opacity(0.2), radius: 10, x: 0, y: 5)
+        }
+        .preferredColorScheme(.dark)
+        .edgesIgnoringSafeArea(.bottom) // Allow input bar to touch bottom edge potentially
+    }
+
+    private func sendMessage() {
+        let question = inputText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !question.isEmpty else { return }
+
+        inputText = "" // Clear input field
+        viewModel.processFollowUpQuestion(question) {
+            // Optional: Completion handler logic after processing finishes
+            print("Follow-up completion handler called.")
+        }
+    }
+}
+
+// MARK: - Individual Chat Message View
+
+// Ensure this struct is defined ONLY ONCE, likely within this file (ResponseView.swift).
+struct ChatMessageView: View {
+    let message: ChatMessage
+    let fontSize: CGFloat
+    @Environment(\.colorScheme) var colorScheme
+    @AppStorage("theme_style") private var themeStyle: String = "standard"
+    @AppStorage("glass_variant") private var glassVariantRaw: Int = 11
+    
+    // Use the same translucent material background as in other views
+    var messageBackground: some View {
+        Group {
+            if themeStyle == "glass" {
+                LiquidGlassBackground(
+                    variant: GlassVariant(rawValue: glassVariantRaw) ?? .v11,
+                    cornerRadius: 15
+                ) {
+                    Color.clear
+                }
+            } else {
+                Color.black.opacity(0.15)
+                    .overlay(.ultraThinMaterial.opacity(0.7))
+                    .overlay(Color.black.opacity(0.05))
+            }
+        }
+    }
+
+    var body: some View {
+        HStack(alignment: .bottom, spacing: 8) { // Align to bottom for icon consistency
+            // Assistant icon on the left
+            if message.role == "assistant" {
+                Image(systemName: "sparkles.circle.fill") // Filled icon example
+                    .font(.title3) // Slightly smaller icon
+                    .foregroundColor(.accentColor)
+                    .padding(.bottom, 5) // Align with bottom of bubble
+            } else {
+                 Spacer().frame(width: 30) // Placeholder to push user message right
+            }
+
+            // Bubble content
+            VStack(alignment: message.role == "assistant" ? .leading : .trailing, spacing: 4) {
+                // Content (Text and Images)
+                VStack(alignment: .leading, spacing: 8) {
+                    // Render Markdown text
+                    Markdown(message.content)
+                        .markdownTheme(.basic) // Use basic theme without backgrounds
+                        .markdownTextStyle {
+                             FontSize(fontSize) // Apply dynamic font size
+                             ForegroundColor(.white.opacity(0.9)) // Use white with opacity for consistency
+                             FontWeight(.bold) // Make text bold
+                        }
+                        .markdownBlockStyle(\.codeBlock) { configuration in
+                            configuration.label
+                                .foregroundColor(.white.opacity(0.9))
+                        }
+                        .textSelection(.enabled)
+                        .fixedSize(horizontal: false, vertical: true) // Allow vertical expansion
+
+                    // Display Images
+                    if !message.images.isEmpty {
+                         ForEach(0..<message.images.count, id: \.self) { index in
+                             // Ensure NSImage is known (AppKit)
+                             if let nsImage = NSImage(data: message.images[index]) {
+                                 Image(nsImage: nsImage)
+                                     .resizable()
+                                     .aspectRatio(contentMode: .fit)
+                                     .frame(maxWidth: 350, maxHeight: 350) // Limit image size
+                                     .cornerRadius(8)
+                                     .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color.gray.opacity(0.3), lineWidth: 1))
+                                     .padding(.top, 5)
+                             }
+                         }
+                    }
+                }
+                .frame(maxWidth: 550, alignment: message.role == "assistant" ? .leading : .trailing) // Limit bubble width slightly more
+
+                // Timestamp below the bubble
+                Text(message.timestamp.formatted(.dateTime.hour().minute()))
+                    .font(.caption2)
+                    .fontWeight(.medium)
+                    .foregroundColor(.white.opacity(0.6))
+                    .padding(.horizontal, 5) // Padding for timestamp
+            }
+
+
+            // User icon on the right
+            if message.role == "user" {
+                 Image(systemName: "person.circle.fill") // Filled icon example
+                     .font(.title3) // Slightly smaller icon
+                     .foregroundColor(.white.opacity(0.8))
+                     .padding(.bottom, 5) // Align with bottom of bubble
+            } else {
+                 Spacer().frame(width: 30) // Placeholder to push assistant message left
+            }
+        }
+    }
+
+    // Helper for bubble background color
+    @ViewBuilder
+    private func bubbleBackground(for role: String) -> some View {
+        if role == "user" {
+            messageBackground.opacity(1.2) // Slightly stronger for user messages
+        } else {
+            messageBackground
+        }
+    }
+}
+
+// Make sure you have WindowBackground ViewModifier defined in BackgroundModifier.swift
+// and the extension to apply it easily:
+/*
+extension View {
+    func windowBackground(useGradient: Bool) -> some View {
+        modifier(WindowBackground(useGradient: useGradient))
+    }
+}
+*/

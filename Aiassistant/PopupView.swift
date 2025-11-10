@@ -1,10 +1,12 @@
 import SwiftUI
 import Cocoa  // For CGEvent and related APIs
 import MarkdownUI  // Add this import
+import UniformTypeIdentifiers
 
 struct PopupView: View {
     @ObservedObject var appState: AppState
     @AppStorage("theme_style") private var themeStyle: String = "standard"
+    @AppStorage("glass_variant") private var glassVariantRaw: Int = 11
     
     // Local chat state for the conversation with unique IDs and image support
     @State private var chatMessages: [(id: UUID, message: String, images: [Data])] = []
@@ -12,6 +14,9 @@ struct PopupView: View {
     
     // Track the most recently generated image for editing requests
     @State private var lastGeneratedImage: Data? = nil
+
+    // Show Quick Actions menu for rewrite mode
+    @State private var showQuickActions = false
     
     // Track whether we are calling the AI
     @State private var isProcessing = false
@@ -19,243 +24,670 @@ struct PopupView: View {
     // Store the application that was active when our popup appeared
     @State private var targetApplication: NSRunningApplication?
     
-    // Define interaction modes: Chat vs. Rewrite in Place
-    enum InteractionMode: String, CaseIterable {
-        case chat = "Chat"
-        case rewrite = "Rewrite in Place"
-    }
+    // Removed local InteractionMode; now using AppState.InteractionMode everywhere
     
-    @State private var selectedMode: InteractionMode = .chat
+    // --- ADDED: Alert state for screenshot errors ---
+    @State private var showPermissionAlert: Bool = false
+    @State private var showCaptureErrorAlert: Bool = false
+    // -------------------------------------------------
+    @State private var isDropTargeted: Bool = false
+    @State private var dropFeedback: String? = nil
+    @State private var lastDropFeedbackID: UUID?
+    @State private var attachmentMessageID: UUID?
+    @State private var dragOffset: CGFloat = 0
+    
+    private let dropTypes: [UTType] = [
+        .fileURL,
+        .image,
+        .pdf,
+        .movie,
+        .url,
+        .plainText,
+        .utf8PlainText,
+        .utf16PlainText,
+        .text
+    ]
     
     var messageBackground: some View {
-        Color.clear.overlay(.ultraThinMaterial.opacity(0.3))
+        Group {
+            if themeStyle == "glass" {
+                LiquidGlassBackground(
+                    variant: GlassVariant(rawValue: glassVariantRaw) ?? .v11, 
+                    cornerRadius: 12
+                ) {
+                    Color.clear
+                }
+            } else {
+                Color.clear.overlay(.ultraThinMaterial.opacity(0.3))
+            }
+        }
     }
+    
+    // --- ADDED: Extracted view for chat/input UI ---
+    // --- REFACTORED: Broke down chatAndInputView further ---
+    
+    // Sub-view for the scrollable chat messages
+    @ViewBuilder
+    private var chatMessagesScrollView: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 12) {
+                ForEach(chatMessages, id: \.id) { item in
+                    let msg = item.message
+                    if msg.hasPrefix("User: ") {
+                        Text(msg)
+                            .fontWeight(.bold)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                    } else if msg.hasPrefix("Assistant: ") {
+                        let response = msg.replacingOccurrences(of: "Assistant: ", with: "")
+                        VStack(alignment: .leading, spacing: 8) {
+                            // Text content
+                            Markdown(response)
+                                .markdownTextStyle {
+                                    FontWeight(.bold)
+                                }
+                                .padding(.bottom, !item.images.isEmpty ? 8 : 0)
+                            
+                            // Display images if present
+                            if !item.images.isEmpty {
+                                ForEach(0..<item.images.count, id: \.self) { index in
+                                    let imageData = item.images[index]
+                                    VStack(spacing: 8) {
+                                        if let nsImage = NSImage(data: imageData) {
+                                            ZStack(alignment: .topTrailing) {
+                                                Image(nsImage: nsImage)
+                                                    .resizable()
+                                                    .aspectRatio(contentMode: .fit)
+                                                    .frame(maxWidth: 300, maxHeight: 300)
+                                                    .cornerRadius(8)
+                                                    .overlay(
+                                                        RoundedRectangle(cornerRadius: 8)
+                                                            .stroke(Color.gray.opacity(0.3), lineWidth: 1)
+                                                    )
+                                                    .shadow(radius: 2)
+                                                
+                                                Button(action: {
+                                                    saveImage(imageData)
+                                                }) {
+                                                    Image(systemName: "square.and.arrow.down")
+                                                        .foregroundColor(.white)
+                                                        .padding(8)
+                                                        .background(Color.black.opacity(0.7))
+                                                        .clipShape(Circle())
+                                                }
+                                                .glassButtonStyle(variant: .v10, cornerRadius: 15)
+                                                .padding(8)
+                                                .scaleEffect(1.2)
+                                            }
+                                        } else {
+                                            Text("Image could not be displayed")
+                                                .fontWeight(.bold)
+                                                .foregroundColor(.red)
+                                                .padding()
+                                                .frame(maxWidth: .infinity)
+                                                .background(Color.gray.opacity(0.1))
+                                                .cornerRadius(8)
+                                        }
+                                        
+                                        Text("Generated Image")
+                                            .font(.caption)
+                                            .fontWeight(.bold)
+                                            .foregroundStyle(.secondary)
+                                        
+                                        Button("Save Image") {
+                                            saveImage(imageData)
+                                        }
+                                        .font(.caption)
+                                        .glassButtonStyle(variant: .v12)
+                                        
+                                        if item.id == chatMessages.last?.id && item.images.contains(where: { $0 == lastGeneratedImage }) {
+                                            Text("Tip: You can request changes to this image")
+                                                .font(.caption2)
+                                                .fontWeight(.semibold)
+                                                .foregroundStyle(.secondary)
+                                                .padding(.top, 2)
+                                            
+                                            Button("Modify This Image") {
+                                                userInput = "Create a new version of this image but with: "
+                                                // Focus the text input
+                                                NSApp.keyWindow?.makeFirstResponder(nil)
+                                            }
+                                            .font(.caption)
+                                            .glassButtonStyle(variant: .v14)
+                                            .padding(.top, 4)
+                                            .help("Gemini will create a new image based on the current one with your requested changes")
+                                        }
+                                    }
+                                    .padding(.vertical, 4)
+                                }
+                            }
+                        }
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                    } else {
+                        Text(msg)
+                            .fontWeight(.bold)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                }
+            }
+            .padding()
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+    
+    // Sub-view for the bottom input controls area
+    @ViewBuilder
+    private var inputAreaView: some View {
+        VStack(spacing: 0) {
+            Divider()
+                .background(.secondary)
+            
+            // Mode Picker: Chat vs. Rewrite in Place
+            HStack(spacing: 12) {
+                Button(action: { appState.selectedMode = .chat }) {
+                    Label("Chat", systemImage: "bubble.left.and.bubble.right")
+                        .frame(maxWidth: .infinity)
+                }
+                .glassButtonStyle(variant: .v8)
+                .opacity(appState.selectedMode == .chat ? 1.0 : 0.6)
+                
+                Button(action: { appState.selectedMode = .rewrite }) {
+                    Label("Rewrite", systemImage: "pencil.line")
+                        .frame(maxWidth: .infinity)
+                }
+                .glassButtonStyle(variant: .v8)
+                .opacity(appState.selectedMode == .rewrite ? 1.0 : 0.6)
+            }
+            .padding(.horizontal)
+            .padding(.vertical, 8)
+            
+            // Instructions for Rewrite mode
+            if appState.selectedMode == .rewrite {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("How to use Rewrite:")
+                        .fontWeight(.medium)
+                    Text("1. Select text in any application")
+                    Text("2. Type rewrite instructions below or use a custom prompt")
+                    Text("3. Press Send to replace the text")
+                    Button(action: { showQuickActions = true }) {
+                        HStack {
+                            Image(systemName: "bolt.fill")
+                            Text("Choose Custom Prompt")
+                        }
+                    }
+                    .padding(.top, 6)
+                    .glassButtonStyle(variant: .v8)
+                }
+                .font(.caption)
+                .foregroundColor(.secondary)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.horizontal)
+                .padding(.bottom, 4)
+            }
+            
+            // Input area with modern styling
+            HStack(spacing: 12) {
+                TextField(appState.selectedMode == .rewrite ? "Type rewrite instructions..." : "Type your message...", 
+                         text: $userInput)
+                    .textFieldStyle(PlainTextFieldStyle())
+                    .padding(10)
+                    .background(.ultraThinMaterial)
+                    .cornerRadius(8)
+                    .onSubmit { onSend() }
+                    .disabled(isProcessing)
+                
+                if isProcessing {
+                    ProgressView()
+                        .progressViewStyle(.circular)
+                        .scaleEffect(0.8)
+                }
+                
+                Button(action: onSend) {
+                    Text(appState.selectedMode == .rewrite ? "Rewrite" : "Send")
+                        .fontWeight(.medium)
+                }
+                .glassButtonStyle(variant: .v8)
+                .disabled(isProcessing || userInput.isEmpty)
+            }
+            .padding()
+            
+        // Bottom row: New Chat button with modern styling
+        HStack {
+            Button(action: startNewChat) {
+                Label("New Chat", systemImage: "plus.message")
+            }
+            .glassButtonStyle(variant: .v8)
+            .padding(.leading, 12)
+            
+            Spacer()
+            
+            Button(action: {
+                appState.updateRunningApplications()
+                appState.isSelectingAppForCapture = true
+            }) {
+                Label("Capture Window", systemImage: "rectangle.on.rectangle")
+            }
+            .glassButtonStyle(variant: .v8)
+            .help("Capture a screenshot from another application window")
+            
+            Spacer()
+            
+            Button(action: copyChatToClipboard) {
+                Label("Copy", systemImage: "doc.on.doc")
+            }
+            .glassButtonStyle(variant: .v8)
+            .padding(.trailing, 12)
+        }
+            .padding(.bottom, 8)
+        }
+    }
+
+    // Combined chat/input view (using the sub-views)
+    @ViewBuilder
+    private var chatAndInputView: some View {
+        VStack(spacing: 0) {
+            // --- ADDED: Display Captured Image if present ---
+            if !appState.selectedImages.isEmpty {
+                VStack {
+                    Text("Captured Window:")
+                        .font(.headline)
+                        .fontWeight(.bold)
+                        .padding(.top)
+                    // Display the first captured image (assuming window capture provides one)
+                    if let firstImageData = appState.selectedImages.first, let nsImage = NSImage(data: firstImageData) {
+                        Image(nsImage: nsImage)
+                            .resizable()
+                            .aspectRatio(contentMode: .fit)
+                            .frame(maxHeight: 200) // Limit height in the preview
+                            .padding()
+                            .background(Color.black.opacity(0.2))
+                            .cornerRadius(8)
+                    }
+                    Divider()
+                }
+                .padding(.horizontal)
+            }
+            // --- END ADDED ---
+            
+            // Chat messages scroll area
+            chatMessagesScrollView
+            
+            // Bottom section with controls
+            inputAreaView
+        }
+    }
+    // --- END REFACTORED ---
+    
+    // --- ADDED: Extracted conditional content view ---
+    @ViewBuilder
+    private var mainContentView: some View {
+        if appState.isSelectingAppForCapture {
+            AppSelectionView(appState: appState) { selectedApp in
+                // Action when app is selected: Call capture function
+                appState.captureSelectedAppWindow(appInfo: selectedApp)
+                // isSelectingAppForCapture is reset within captureSelectedAppWindow
+            }
+        } else {
+            // Use the extracted view
+            chatAndInputView
+        }
+    }
+    // --- END ADDED ---
     
     var body: some View {
         VStack(spacing: 0) {
-            // Chat messages scroll area
-            ScrollView {
-                VStack(alignment: .leading, spacing: 12) {
-                    ForEach(chatMessages, id: \.id) { item in
-                        let msg = item.message
-                        if msg.hasPrefix("User: ") {
-                            Text(msg)
-                                .padding(12)
-                                .frame(maxWidth: .infinity, alignment: .leading)
-                                .background(messageBackground)
-                                .cornerRadius(12)
-                        } else if msg.hasPrefix("Assistant: ") {
-                            let response = msg.replacingOccurrences(of: "Assistant: ", with: "")
-                            VStack(alignment: .leading, spacing: 8) {
-                                // Text content
-                                Markdown(response)
-                                    .padding(.bottom, !item.images.isEmpty ? 8 : 0)
-                                
-                                // Display images if present
-                                if !item.images.isEmpty {
-                                    ForEach(0..<item.images.count, id: \.self) { index in
-                                        let imageData = item.images[index]
-                                        VStack(spacing: 8) {
-                                            if let nsImage = NSImage(data: imageData) {
-                                                ZStack(alignment: .topTrailing) {
-                                                    Image(nsImage: nsImage)
-                                                        .resizable()
-                                                        .aspectRatio(contentMode: .fit)
-                                                        .frame(maxWidth: 300, maxHeight: 300)
-                                                        .cornerRadius(8)
-                                                        .overlay(
-                                                            RoundedRectangle(cornerRadius: 8)
-                                                                .stroke(Color.gray.opacity(0.3), lineWidth: 1)
-                                                        )
-                                                        .shadow(radius: 2)
-                                                    
-                                                    Button(action: {
-                                                        saveImage(imageData)
-                                                    }) {
-                                                        Image(systemName: "square.and.arrow.down")
-                                                            .foregroundColor(.white)
-                                                            .padding(8)
-                                                            .background(Color.black.opacity(0.7))
-                                                            .clipShape(Circle())
-                                                    }
-                                                    .buttonStyle(PlainButtonStyle())
-                                                    .padding(8)
-                                                    .scaleEffect(1.2)
-                                                }
-                                            } else {
-                                                Text("Image could not be displayed")
-                                                    .foregroundColor(.red)
-                                                    .padding()
-                                                    .frame(maxWidth: .infinity)
-                                                    .background(Color.gray.opacity(0.1))
-                                                    .cornerRadius(8)
-                                            }
-                                            
-                                            Text("Generated Image")
-                                                .font(.caption)
-                                                .foregroundStyle(.secondary)
-                                            
-                                            Button("Save Image") {
-                                                saveImage(imageData)
-                                            }
-                                            .font(.caption)
-                                            .padding(.vertical, 4)
-                                            .padding(.horizontal, 10)
-                                            .background(Color.blue.opacity(0.2))
-                                            .cornerRadius(8)
-                                            
-                                            if item.id == chatMessages.last?.id && item.images.contains(where: { $0 == lastGeneratedImage }) {
-                                                Text("Tip: You can request changes to this image")
-                                                    .font(.caption2)
-                                                    .foregroundStyle(.secondary)
-                                                    .padding(.top, 2)
-                                                
-                                                Button("Modify This Image") {
-                                                    userInput = "Create a new version of this image but with: "
-                                                    // Focus the text input
-                                                    NSApp.keyWindow?.makeFirstResponder(nil)
-                                                }
-                                                .font(.caption)
-                                                .padding(.vertical, 4)
-                                                .padding(.horizontal, 10)
-                                                .background(Color.purple.opacity(0.2))
-                                                .cornerRadius(8)
-                                                .padding(.top, 4)
-                                                .help("Gemini will create a new image based on the current one with your requested changes")
-                                            }
-                                        }
-                                        .padding(.vertical, 4)
-                                    }
-                                }
-                            }
-                            .padding(12)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            .background(messageBackground)
-                            .cornerRadius(12)
-                        } else {
-                            Text(msg)
-                                .padding(12)
-                                .frame(maxWidth: .infinity, alignment: .leading)
-                                .background(messageBackground)
-                                .cornerRadius(12)
-                        }
-                    }
+            mainContentView
+
+            .alert("Screen Recording Permission", isPresented: $showPermissionAlert) {
+                Button("Open Settings") {
+                    NSWorkspace.shared.open(URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture")!)
                 }
-                .padding()
+                Button("Cancel", role: .cancel) {}
+            } message: {
+                Text("This app needs Screen Recording permission to capture application windows. Please grant permission in System Settings -> Privacy & Security -> Screen Recording.")
             }
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .alert("Capture Failed", isPresented: $showCaptureErrorAlert) {
+                Button("OK", role: .cancel) {}
+            } message: {
+                Text("Could not capture the window for '\(appState.captureErrorAppName)'. Please ensure the window is visible and not minimized.")
+            }
+            .onChange(of: appState.showPermissionAlert) { newValue in
+                showPermissionAlert = newValue
+                if newValue {
+                    appState.showPermissionAlert = false
+                }
+            }
+            .onChange(of: appState.showCaptureErrorAlert) { newValue in
+                showCaptureErrorAlert = newValue
+                if newValue {
+                    appState.showCaptureErrorAlert = false
+                }
+            }
             
-            // Bottom section with controls
-            VStack(spacing: 0) {
-                Divider()
-                    .background(.secondary)
-                
-                // Mode Picker: Chat vs. Rewrite in Place
-                HStack {
-                    Picker("", selection: $selectedMode) {
-                        ForEach(InteractionMode.allCases, id: \.self) { mode in
-                            Text(mode.rawValue).tag(mode)
+            .background(
+                Group {
+                    if themeStyle == "glass" {
+                        LiquidGlassBackground(
+                            variant: GlassVariant(rawValue: glassVariantRaw) ?? .v11,
+                            cornerRadius: 0
+                        ) {
+                            Color.clear
+                        }
+                        .ignoresSafeArea()
+                    } else {
+                        ZStack {
+                            Color(.windowBackgroundColor)
+                                .opacity(0.95)
+                                .ignoresSafeArea()
+                            
+                            LinearGradient(
+                                colors: [
+                                    Color.purple.opacity(0.02),
+                                    Color.blue.opacity(0.02)
+                                ],
+                                startPoint: .topLeading,
+                                endPoint: .bottomTrailing
+                            )
+                            .ignoresSafeArea()
                         }
                     }
-                    .pickerStyle(SegmentedPickerStyle())
-                    .frame(maxWidth: .infinity)
                 }
-                .padding(.horizontal)
-                .padding(.vertical, 8)
-                
-                // Instructions for Rewrite mode
-                if selectedMode == .rewrite {
-                    VStack(alignment: .leading, spacing: 4) {
-                        Text("How to use Rewrite:")
-                            .fontWeight(.medium)
-                        Text("1. Select text in any application")
-                        Text("2. Type rewrite instructions below")
-                        Text("3. Press Send to replace the text")
-                    }
-                    .font(.caption)
-                    .foregroundColor(.secondary)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(.horizontal)
-                    .padding(.bottom, 4)
-                }
-                
-                // Input area with modern styling
-                HStack(spacing: 12) {
-                    TextField(selectedMode == .rewrite ? "Type rewrite instructions..." : "Type your message...", 
-                             text: $userInput)
-                        .textFieldStyle(PlainTextFieldStyle())
-                        .padding(10)
-                        .background(.ultraThinMaterial)
-                        .cornerRadius(8)
-                        .onSubmit { onSend() }
-                        .disabled(isProcessing)
-                    
-                    if isProcessing {
-                        ProgressView()
-                            .progressViewStyle(.circular)
-                            .scaleEffect(0.8)
-                    }
-                    
-                    Button(action: onSend) {
-                        Text(selectedMode == .rewrite ? "Rewrite" : "Send")
-                            .fontWeight(.medium)
-                            .padding(.horizontal, 16)
-                            .padding(.vertical, 8)
-                            .background(.ultraThinMaterial)
-                            .cornerRadius(8)
-                    }
-                    .buttonStyle(PlainButtonStyle())
-                    .disabled(isProcessing || userInput.isEmpty)
-                }
-                .padding()
-                
-            // Bottom row: New Chat button with modern styling
-            HStack {
-                Button(action: startNewChat) {
-                    Label("New Chat", systemImage: "plus.message")
-                        .padding(8)
-                        .background(.ultraThinMaterial)
-                        .cornerRadius(8)
-                }
-                .buttonStyle(PlainButtonStyle())
-                .padding(.leading, 12)
-                
-                Spacer()
-                
-                Button(action: exportChat) {
-                    Label("Export", systemImage: "square.and.arrow.up")
-                        .padding(8)
-                        .background(.ultraThinMaterial)
-                        .cornerRadius(8)
-                }
-                .buttonStyle(PlainButtonStyle())
-                .padding(.trailing, 12)
+            )
+            .cornerRadius(12)
+            .frame(minWidth: 300, idealWidth: 400, maxWidth: .infinity, minHeight: 400, idealHeight: 500, maxHeight: .infinity)
+            .preferredColorScheme(.dark)
+            .onAppear {
+                setupApplicationTracking()
             }
-                .padding(.bottom, 8)
+            .sheet(isPresented: $showQuickActions) {
+                QuickActionsView(
+                    appState: appState,
+                    onComplete: { showQuickActions = false },
+                    onPromptSelected: { prompt in
+                        userInput = prompt
+                    },
+                    promptSelectionOnly: true
+                )
             }
         }
-        .background(
-            ZStack {
-                Color(.windowBackgroundColor)
-                    .opacity(0.95)
-                    .ignoresSafeArea()
-                
-                // Subtle gradient background
-                LinearGradient(
-                    colors: [
-                        Color.purple.opacity(0.02),
-                        Color.blue.opacity(0.02)
-                    ],
-                    startPoint: .topLeading,
-                    endPoint: .bottomTrailing
-                )
-                .ignoresSafeArea()
-            }
+        .onDrop(of: dropTypes, isTargeted: $isDropTargeted, perform: handleDrop)
+        .overlay(
+            RoundedRectangle(cornerRadius: 12)
+                .stroke(Color.accentColor.opacity(isDropTargeted ? 0.6 : 0), lineWidth: 2)
         )
-        .cornerRadius(12)
-        .preferredColorScheme(.dark)
-        .onAppear {
-            setupApplicationTracking()
+        .overlay(alignment: .top) {
+            if let feedback = dropFeedback {
+                Text(feedback)
+                    .font(.caption)
+                    .foregroundStyle(.white)
+                    .padding(.vertical, 6)
+                    .padding(.horizontal, 12)
+                    .background(Color.accentColor.opacity(0.85))
+                    .cornerRadius(10)
+                    .padding(.top, 12)
+                    .transition(.opacity.combined(with: .move(edge: .top)))
+            }
+        }
+        .onChange(of: appState.lastClipboardType) { newValue in
+            setAttachmentMessage(for: newValue)
+        }
+        .offset(y: dragOffset)
+        .animation(.spring(response: 0.25, dampingFraction: 0.8), value: dragOffset)
+        .highPriorityGesture(
+            DragGesture(minimumDistance: 20)
+                .onChanged { value in
+                    let translation = value.translation.height
+                    dragOffset = translation > 0 ? translation : 0
+                }
+                .onEnded { value in
+                    let translation = value.translation.height
+                    if translation > 140 {
+                        dismissPopup()
+                    } else {
+                        dragOffset = 0
+                    }
+                }
+        )
+    }
+    
+    private func handleDrop(providers: [NSItemProvider], location: CGPoint) -> Bool {
+        var handled = false
+        let state = appState
+        let textTypeIdentifiers = [
+            UTType.plainText.identifier,
+            UTType.utf8PlainText.identifier,
+            UTType.utf16PlainText.identifier,
+            UTType.text.identifier
+        ]
+        
+        for provider in providers {
+            if provider.hasItemConformingToTypeIdentifier(UTType.fileURL.identifier) {
+                let suggestedName = provider.suggestedName
+                provider.loadItem(forTypeIdentifier: UTType.fileURL.identifier, options: nil) { item, _ in
+                    guard let url = resolveURL(from: item) else {
+                        attemptFileRepresentationLoad(provider: provider, suggestedName: suggestedName)
+                        return
+                    }
+                    if url.isFileURL {
+                        state.handleDroppedFile(url: url, displayName: suggestedName)
+                        showDropFeedback("Loaded \(suggestedName ?? url.lastPathComponent)")
+                    } else {
+                        state.handleDroppedURL(url)
+                        showDropFeedback("Loaded \(url.absoluteString)")
+                    }
+                }
+                handled = true
+            } else if provider.canLoadObject(ofClass: URL.self) {
+                let suggestedName = provider.suggestedName
+                provider.loadObject(ofClass: URL.self) { object, _ in
+                    guard let url = object else {
+                        attemptFileRepresentationLoad(provider: provider, suggestedName: suggestedName)
+                        return
+                    }
+                    if url.isFileURL {
+                        state.handleDroppedFile(url: url, displayName: suggestedName)
+                        showDropFeedback("Loaded \(suggestedName ?? url.lastPathComponent)")
+                    } else {
+                        state.handleDroppedURL(url)
+                        showDropFeedback("Loaded \(url.absoluteString)")
+                    }
+                }
+                handled = true
+            } else if provider.hasItemConformingToTypeIdentifier(UTType.pdf.identifier) {
+                let suggestedName = provider.suggestedName
+                provider.loadDataRepresentation(forTypeIdentifier: UTType.pdf.identifier) { data, _ in
+                    guard let data else {
+                        attemptFileRepresentationLoad(provider: provider, suggestedName: suggestedName, fallbackTypeIdentifier: UTType.pdf.identifier)
+                        return
+                    }
+                    state.handleDroppedPDFData(data, fileName: suggestedName)
+                    showDropFeedback("Loaded \(suggestedName ?? "PDF")")
+                }
+                handled = true
+            } else if provider.hasItemConformingToTypeIdentifier(UTType.image.identifier) {
+                let suggestedName = provider.suggestedName
+                provider.loadDataRepresentation(forTypeIdentifier: UTType.image.identifier) { data, _ in
+                    guard let data else {
+                        attemptFileRepresentationLoad(provider: provider, suggestedName: suggestedName, fallbackTypeIdentifier: UTType.image.identifier)
+                        return
+                    }
+                    state.handleDroppedImageData(data)
+                    showDropFeedback("Loaded \(suggestedName ?? "Image")")
+                }
+                handled = true
+            } else if let identifier = textTypeIdentifiers.first(where: { provider.hasItemConformingToTypeIdentifier($0) }) {
+                provider.loadItem(forTypeIdentifier: identifier, options: nil) { item, _ in
+                    guard let text = resolveText(from: item) else {
+                        attemptFileRepresentationLoad(provider: provider, suggestedName: provider.suggestedName, fallbackTypeIdentifier: identifier)
+                        return
+                    }
+                    state.handleDroppedText(text, sourceName: provider.suggestedName)
+                    showDropFeedback("Loaded \(provider.suggestedName ?? "Text")")
+                }
+                handled = true
+            } else if provider.hasItemConformingToTypeIdentifier(UTType.item.identifier) {
+                attemptFileRepresentationLoad(provider: provider, suggestedName: provider.suggestedName)
+                handled = true
+            }
+            
+            if handled {
+                break
+            }
+        }
+        
+        return handled
+    }
+
+    private func attemptFileRepresentationLoad(provider: NSItemProvider, suggestedName: String?, fallbackTypeIdentifier: String = UTType.data.identifier) {
+        print("DEBUG (attemptFileRepresentationLoad): Trying fallback with type=\(fallbackTypeIdentifier), suggestedName=\(suggestedName ?? "nil")")
+        provider.loadInPlaceFileRepresentation(forTypeIdentifier: fallbackTypeIdentifier) { url, inPlace, error in
+            if let url {
+                let displayName = suggestedName ?? url.lastPathComponent
+                if url.isFileURL {
+                    appState.handleDroppedFile(url: url, displayName: displayName)
+                } else {
+                    appState.handleDroppedURL(url)
+                }
+                showDropFeedback("Loaded \(displayName)")
+                return
+            }
+            
+            provider.loadFileRepresentation(forTypeIdentifier: fallbackTypeIdentifier) { tempURL, error in
+                guard let tempURL else { return }
+                let displayName = suggestedName ?? tempURL.lastPathComponent
+                
+                let tempDir = FileManager.default.temporaryDirectory
+                let destinationURL = tempDir.appendingPathComponent("\(UUID().uuidString)_\(displayName)")
+                
+                do {
+                    if FileManager.default.fileExists(atPath: destinationURL.path) {
+                        try FileManager.default.removeItem(at: destinationURL)
+                    }
+                    try FileManager.default.copyItem(at: tempURL, to: destinationURL)
+                    appState.handleDroppedFile(url: destinationURL, displayName: displayName)
+                    showDropFeedback("Loaded \(displayName)")
+                } catch {
+                    print("Failed to copy dropped temp file: \(error)")
+                }
+            }
+        }
+    }
+    
+    private func showDropFeedback(_ message: String) {
+        DispatchQueue.main.async {
+            let id = UUID()
+            lastDropFeedbackID = id
+            withAnimation {
+                dropFeedback = message
+            }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) {
+                if lastDropFeedbackID == id {
+                    withAnimation {
+                        dropFeedback = nil
+                    }
+                }
+            }
+        }
+    }
+
+    private func setAttachmentMessage(for type: ClipboardContentType) {
+        if let existingID = attachmentMessageID {
+            chatMessages.removeAll { $0.id == existingID }
+            attachmentMessageID = nil
+        }
+        
+        let message: String
+        var shouldDisplay = false
+        switch type {
+        case .pdf:
+            message = "User attached a PDF."
+            shouldDisplay = !appState.selectedText.isEmpty
+        case .url:
+            message = "User attached a URL."
+            shouldDisplay = !appState.selectedText.isEmpty
+        case .image:
+            message = "User attached an Image."
+            shouldDisplay = !appState.selectedImages.isEmpty
+        case .video:
+            message = "User attached a Video."
+            shouldDisplay = !appState.selectedVideos.isEmpty
+        case .text:
+            // Avoid showing a banner for plain text to keep the UI clean on launch.
+            return
+        case .none:
+            return
+        }
+        
+        guard shouldDisplay else { return }
+        
+        let newID = UUID()
+        chatMessages.insert((id: newID, message: message, images: []), at: 0)
+        attachmentMessageID = newID
+    }
+    
+    private func resolveURL(from item: NSSecureCoding?) -> URL? {
+        if let url = item as? URL {
+            return url
+        }
+        if let nsurl = item as? NSURL {
+            return nsurl as URL
+        }
+        if let data = item as? Data {
+            if let url = URL(dataRepresentation: data, relativeTo: nil, isAbsolute: true) {
+                print("DEBUG (resolveURL): Resolved via dataRepresentation -> \(url)")
+                return url
+            }
+            var stale = false
+            if let bookmarkURL = try? URL(resolvingBookmarkData: data, options: [.withSecurityScope, .withoutUI, .withoutMounting], relativeTo: nil, bookmarkDataIsStale: &stale) {
+                print("DEBUG (resolveURL): Resolved via bookmark -> \(bookmarkURL), stale=\(stale)")
+                return bookmarkURL
+            }
+            if let string = String(data: data, encoding: .utf8)?
+                .trimmingCharacters(in: .whitespacesAndNewlines),
+               !string.isEmpty {
+                if let url = URL(string: string), url.scheme != nil {
+                    print("DEBUG (resolveURL): Resolved via UTF8 string -> \(url)")
+                    return url
+                }
+                print("DEBUG (resolveURL): Treating string as file path -> \(string)")
+                return URL(fileURLWithPath: string)
+            }
+        }
+        if let string = item as? String {
+            if let url = URL(string: string), url.scheme != nil {
+                print("DEBUG (resolveURL): Resolved via NSString -> \(url)")
+                return url
+            }
+            print("DEBUG (resolveURL): Treating NSString as file path -> \(string)")
+            return URL(fileURLWithPath: string)
+        }
+        return nil
+    }
+    
+    private func resolveText(from item: NSSecureCoding?) -> String? {
+        if let string = item as? String {
+            return string
+        }
+        if let data = item as? Data {
+            if let text = String(data: data, encoding: .utf8) {
+                return text
+            }
+            if let text = String(data: data, encoding: .utf16) {
+                return text
+            }
+            return String(decoding: data, as: UTF8.self)
+        }
+        if let attributed = item as? NSAttributedString {
+            return attributed.string
+        }
+        return nil
+    }
+
+    private func dismissPopup() {
+        dragOffset = 0
+        if let delegate = NSApplication.shared.delegate as? AppDelegate {
+            delegate.closePopupWindow()
+        } else {
+            NSApp.keyWindow?.close()
         }
     }
     
@@ -289,7 +721,7 @@ struct PopupView: View {
     
     /// Called when user presses Return or taps Send.
     private func onSend() {
-        switch selectedMode {
+        switch appState.selectedMode {
         case .chat:
             sendChatMessage()
         case .rewrite:
@@ -299,137 +731,212 @@ struct PopupView: View {
     
     /// Display a short label based on the detected clipboard type.
     private func populateInitialChatState() {
-        switch appState.lastClipboardType {
-        case .pdf:
-            chatMessages.append((id: UUID(), message: "User attached a PDF.", images: []))
-        case .url:
-            chatMessages.append((id: UUID(), message: "User attached a URL.", images: []))
-        case .image:
-            chatMessages.append((id: UUID(), message: "User attached an Image.", images: []))
-        case .video:
-            chatMessages.append((id: UUID(), message: "User attached a Video.", images: []))
-        case .text:
-            chatMessages.append((id: UUID(), message: "User attached some Text.", images: []))
-        case .none:
-            break
-        }
+        setAttachmentMessage(for: appState.lastClipboardType)
     }
     
     /// Regular chat: combines any extracted text with the user's typed message.
     private func sendChatMessage() {
         guard !userInput.isEmpty else { return }
-        let typedPrompt = userInput
-        userInput = ""
-        chatMessages.append((id: UUID(), message: "User: \(typedPrompt)", images: []))
         
-        // Detect if this is an image editing request
-        let isImageEditRequest = detectImageEditRequest(typedPrompt)
-        
-        // If this is an image edit request and we have a previous image, include it
-        var imagesToInclude = appState.selectedImages
-        if isImageEditRequest, let lastImage = lastGeneratedImage, !appState.selectedImages.contains(lastImage) {
-            print("Image edit request detected - including last generated image")
-            imagesToInclude.append(lastImage)
-        }
-        
-        let combinedPrompt = """
-        \(appState.selectedText)
-        
-        User says: \(typedPrompt)
-        """
-        
-        // Create system prompt for image editing
-        let systemPrompt: String?
-        let finalPrompt: String
-        
-        if isImageEditRequest && lastGeneratedImage != nil {
-            systemPrompt = """
-            You are an AI that can generate new images based on reference images. The user has attached an image and wants you to create a new version with specific changes.
-            When you receive an image along with a request for modifications:
-            1. Examine the attached image carefully
-            2. Create a NEW image that incorporates the requested changes 
-            3. Return the newly generated image
+        // --- Make function async --- 
+        Task { 
+            // --- Move existing logic inside Task --- 
+            let typedPrompt = userInput
+            userInput = ""
+            chatMessages.append((id: UUID(), message: "User: \(typedPrompt)", images: []))
             
-            Your strength is in generating images based on examples and descriptions.
-            """
+            var textContext = appState.selectedText
             
-            finalPrompt = """
-            I've attached an image and I'd like you to create a new version with these changes: \(typedPrompt)
-            
-            Please use the attached image as a reference and create a new image that incorporates these modifications.
-            The new image should maintain the overall essence of the original but with the requested changes applied.
-            """
-        } else {
-            systemPrompt = nil
-            finalPrompt = combinedPrompt
-        }
-        
-        isProcessing = true
-        Task {
-            do {
-                let aiResponse = try await appState.activeProvider.processText(
-                    systemPrompt: systemPrompt,
-                    userPrompt: finalPrompt,
-                    images: imagesToInclude,
-                    videos: appState.selectedVideos
-                )
+            if let targetApp = targetApplication ?? appState.previousApplication,
+               targetApp.bundleIdentifier != Bundle.main.bundleIdentifier {
+                let ourApp = NSRunningApplication.current
+                print("DEBUG: Attempting to refresh chat context from \(targetApp.localizedName ?? "Unknown").")
                 
-                if !aiResponse.images.isEmpty {
-                    // Store the most recent generated image for potential future edits
-                    if let latestImage = aiResponse.images.last {
-                        lastGeneratedImage = latestImage
+                targetApp.activate(options: .activateIgnoringOtherApps)
+                try? await Task.sleep(nanoseconds: 350_000_000)
+                
+                if let refreshedText = AccessibilityHelper.copyTextFromFocusedElement(targetApplication: targetApp),
+                   !refreshedText.isEmpty {
+                    await MainActor.run {
+                        appState.selectedText = refreshedText
+                        appState.lastClipboardType = .text
+                        appState.previousApplication = targetApp
+                        self.targetApplication = targetApp
                     }
-                    
-                    // If there are images in the response, create a response window
-                    DispatchQueue.main.async {
-                        // Add debug print
-                        print("Creating response window with \(aiResponse.images.count) images")
-                        
-                        let window = ResponseWindow(
-                            title: "AI Response with Images",
-                            content: aiResponse.text,
-                            selectedText: appState.selectedText,
-                            option: WritingOption.general,
-                            images: aiResponse.images
-                        )
-                        WindowManager.shared.addResponseWindow(window)
-                        
-                        // Add a message to the chat including the image data
-                        self.chatMessages.append((
-                            id: UUID(), 
-                            message: "Assistant: \(aiResponse.text)",
-                            images: aiResponse.images
-                        ))
-                    }
-                } else if isImageEditRequest && lastGeneratedImage != nil {
-                    // Handle the case where an image edit was requested but no image was returned
-                    DispatchQueue.main.async {
-                        print("Image edit request acknowledged but no modified image was returned")
-                        
-                        // Provide feedback to user about the limitation
-                        let limitationMessage = """
-                        I attempted to create a modified version of the image based on your request, but wasn't able to generate a new image.
-                        
-                        Please try asking for the modification in a different way, such as:
-                        
-                        "Create a version of this image with a blue background"
-                        "Transform this image to have a more cartoon-like style"
-                        "Make a similar image but with mountains in the background"
-                        
-                        This often works better with more specific, descriptive instructions.
-                        """
-                        
-                        chatMessages.append((id: UUID(), message: "Assistant: \(limitationMessage)", images: []))
-                    }
+                    textContext = refreshedText
+                    print("DEBUG: Successfully refreshed chat context from target application.")
                 } else {
-                    // Regular text response
-                    chatMessages.append((id: UUID(), message: "Assistant: \(aiResponse.text)", images: []))
+                    await MainActor.run {
+                        appState.previousApplication = targetApp
+                        self.targetApplication = targetApp
+                    }
+                    print("DEBUG: Failed to refresh chat context from target application; falling back to cached selection.")
                 }
-            } catch {
-                chatMessages.append((id: UUID(), message: "Error: \(error.localizedDescription)", images: []))
+                
+                await MainActor.run {
+                    ourApp.activate(options: .activateIgnoringOtherApps)
+                }
+            } else if textContext.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                print("DEBUG: No target application available and cached chat context is empty.")
             }
-            isProcessing = false
-        }
+            
+            // --- REVISED IMAGE HANDLING --- 
+            // Determine images to send based on context
+            var imagesToIncludeForProcessing: [Data] = []
+            var clearSelectedImagesAfterSend = false
+
+            if let conversationImage = appState.capturedImageForConversation {
+                // 1. Prioritize conversation context image (from window capture)
+                imagesToIncludeForProcessing = [conversationImage]
+                print("Using conversation image context (window capture).")
+                // Don't clear selectedImages if we are using conversation context
+                clearSelectedImagesAfterSend = false 
+            } else if !appState.selectedImages.isEmpty {
+                // 2. Use clipboard/selection image if no conversation image exists
+                imagesToIncludeForProcessing = appState.selectedImages
+                // Mark for clearing *after* this send, as it's temporary context
+                clearSelectedImagesAfterSend = true 
+                print("Using temporary clipboard/selection image context.")
+                // --- ADDED: Promote clipboard image to conversation context --- 
+                if let clipboardImage = appState.selectedImages.first {
+                    print("Promoting clipboard image to conversation context.")
+                    appState.capturedImageForConversation = clipboardImage
+                }
+                // --- END ADDED ---
+            } else {
+                // 3. No image context
+                print("No image context for this message.")
+                clearSelectedImagesAfterSend = false
+            }
+            
+            // Detect if this is an image editing request using the *last generated* image
+            let isImageEditRequest = detectImageEditRequest(typedPrompt)
+            // If this is an edit request, ensure the last generated image is included.
+            if isImageEditRequest, let lastImage = lastGeneratedImage, !imagesToIncludeForProcessing.contains(lastImage) {
+                print("Image edit request detected - including last generated image")
+                imagesToIncludeForProcessing.append(lastImage) 
+            }
+            // --- END REVISED IMAGE HANDLING ---
+            
+            // Text context already contains the freshest captured selection (if available)
+            isProcessing = true
+            
+            let combinedPrompt = """
+            \(textContext) // Use the potentially fetched text context
+            
+            User says: \(typedPrompt)
+            """
+            
+            // Create system prompt for image editing
+            let systemPrompt: String?
+            let finalPrompt: String
+            
+            if isImageEditRequest && lastGeneratedImage != nil {
+                systemPrompt = """
+                You are an AI that can generate new images based on reference images. The user has attached an image and wants you to create a new version with specific changes.
+                When you receive an image along with a request for modifications:
+                1. Examine the attached image carefully
+                2. Create a NEW image that incorporates the requested changes 
+                3. Return the newly generated image
+                
+                Your strength is in generating images based on examples and descriptions.
+                """
+                
+                finalPrompt = """
+                I've attached an image and I'd like you to create a new version with these changes: \(typedPrompt)
+                
+                Please use the attached image as a reference and create a new image that incorporates these modifications.
+                The new image should maintain the overall essence of the original but with the requested changes applied.
+                """
+            } else {
+                systemPrompt = nil
+                finalPrompt = combinedPrompt
+            }
+            
+            // isProcessing = true // Moved up for URL fetch
+            // Task { // Removed outer Task, already inside one
+                do {
+                    let aiResponse = try await appState.activeProvider.processText(
+                        systemPrompt: systemPrompt,
+                        userPrompt: finalPrompt,
+                        images: imagesToIncludeForProcessing,
+                        videos: appState.selectedVideos
+                    )
+                    
+                    if !aiResponse.images.isEmpty {
+                        // Store the most recent generated image for potential future edits
+                        if let latestImage = aiResponse.images.last {
+                            lastGeneratedImage = latestImage
+                        }
+                        
+                        // If there are images in the response, create a response window
+                        DispatchQueue.main.async {
+                            // Add debug print
+                            print("Creating response window with \(aiResponse.images.count) images")
+                            
+                            // Create the response view first
+                            let responseView = ResponseView(
+                                content: aiResponse.text,
+                                selectedText: appState.selectedText,
+                                option: WritingOption.general,
+                                images: aiResponse.images
+                            )
+                            
+                            // Create the window using the view
+                            let window = ResponseWindow(
+                                with: responseView,
+                                title: "AI Response with Images",
+                                hasImages: !aiResponse.images.isEmpty
+                            )
+                            
+                            WindowManager.shared.addResponseWindow(window)
+                            
+                            // Add a message to the chat including the image data
+                            self.chatMessages.append((
+                                id: UUID(), 
+                                message: "Assistant: \(aiResponse.text)",
+                                images: aiResponse.images
+                            ))
+                        }
+                    } else if isImageEditRequest && lastGeneratedImage != nil {
+                        // Handle the case where an image edit was requested but no image was returned
+                        DispatchQueue.main.async {
+                            print("Image edit request acknowledged but no modified image was returned")
+                            
+                            // Provide feedback to user about the limitation
+                            let limitationMessage = """
+                            I attempted to create a modified version of the image based on your request, but wasn't able to generate a new image.
+                            
+                            Please try asking for the modification in a different way, such as:
+                            
+                            "Create a version of this image with a blue background"
+                            "Transform this image to have a more cartoon-like style"
+                            "Make a similar image but with mountains in the background"
+                            
+                            This often works better with more specific, descriptive instructions.
+                            """
+                            
+                            chatMessages.append((id: UUID(), message: "Assistant: \(limitationMessage)", images: []))
+                        }
+                    } else {
+                        // Regular text response
+                        chatMessages.append((id: UUID(), message: "Assistant: \(aiResponse.text)", images: []))
+                    }
+                } catch {
+                    chatMessages.append((id: UUID(), message: "Error: \(error.localizedDescription)", images: []))
+                }
+                isProcessing = false
+
+                // --- ADDED: Clear temporary images only if they were used --- 
+                if clearSelectedImagesAfterSend {
+                    DispatchQueue.main.async {
+                         print("Clearing temporary selectedImages after send.")
+                         appState.selectedImages = []
+                    }
+                }
+                // --- END ADDED ---
+            //} // Removed outer Task bracket
+        } // End of Task wrapper
     }
     
     // Detect if a prompt is requesting edits to a previously generated image
@@ -464,6 +971,7 @@ struct PopupView: View {
     /// Clears the chat and rechecks the clipboard.
     private func startNewChat() {
         chatMessages.removeAll()
+        attachmentMessageID = nil
         userInput = ""
         lastGeneratedImage = nil
         appState.selectedText = ""
@@ -471,7 +979,7 @@ struct PopupView: View {
         appState.selectedVideos = []
         appState.lastClipboardType = .none
         appState.recheckClipboard()
-        populateInitialChatState()
+        appState.capturedImageForConversation = nil
     }
     
     /// The inline rewrite flow
@@ -481,6 +989,7 @@ struct PopupView: View {
             return
         }
         isProcessing = true
+        print("DEBUG: rewriteInPlace function started.") // Log start
         
         // Get the current frontmost application if available, otherwise use stored target
         let currentApp = NSWorkspace.shared.frontmostApplication
@@ -488,6 +997,8 @@ struct PopupView: View {
         
         guard let targetApp = targetApp,
               !targetApp.isTerminated else {
+            print("DEBUG: rewriteInPlace FAILED - targetApp is nil or terminated.")
+            print("DEBUG: targetApp = \(targetApp?.localizedName ?? "nil"), isTerminated = \(targetApp?.isTerminated ?? true)")
             print("Please select text in another application first")
             isProcessing = false
             return
@@ -495,12 +1006,13 @@ struct PopupView: View {
         
         // Make sure it's not our own app
         if targetApp.bundleIdentifier == Bundle.main.bundleIdentifier {
+            print("DEBUG: rewriteInPlace FAILED - targetApp is our own app.")
             print("Please select text in another application first")
             isProcessing = false
             return
         }
         
-        // Update stored target application
+        // Update stored target application references
         self.targetApplication = targetApp
         appState.previousApplication = targetApp
         
@@ -523,31 +1035,42 @@ struct PopupView: View {
             targetApp.activate(options: .activateIgnoringOtherApps)
             
             // Wait for activation with consistent timing
+            print("DEBUG: Activating target app: \(targetApp.localizedName ?? "Unknown")")
             try? await Task.sleep(nanoseconds: 300_000_000) // 0.3 seconds
             
-            guard let externalText = AccessibilityHelper.copyTextFromFocusedElement(),
+            print("DEBUG: Attempting to copy text from focused element via AccessibilityHelper...")
+            guard let externalText = AccessibilityHelper.copyTextFromFocusedElement(targetApplication: targetApp),
                   !externalText.isEmpty else {
                 print("No text available from the external app's selection.")
+                print("DEBUG: rewriteInPlace FAILED - AccessibilityHelper.copyTextFromFocusedElement returned nil or empty.")
                 isProcessing = false
                 return
             }
+            print("DEBUG: AccessibilityHelper captured text (length: \(externalText.count)) = '\(String(externalText.prefix(100)))...'")
             
             print("Successfully captured text of length: \(externalText.count)")
             print("Captured text preview: \(String(externalText.prefix(50)))...")
             
+            await MainActor.run {
+                appState.selectedText = externalText
+                appState.lastClipboardType = .text
+            }
+            
             // Step 2: Build the prompt with special handling for spreadsheets
             let instructions = userInput
+            print("DEBUG: Instructions for AI: \(instructions)") // Log instructions
             userInput = "" // Clear input after capturing instructions
             
             // Detect if this is an image editing request
             let isImageEditRequest = detectImageEditRequest(instructions)
             
-            // If this is an image edit request and we have a previous image, include it
-            var imagesToInclude = appState.selectedImages
-            if isImageEditRequest, let lastImage = lastGeneratedImage, !appState.selectedImages.contains(lastImage) {
+            // --- CHANGED: Only include lastGeneratedImage if it's an explicit edit request ---
+            var imagesToInclude: [Data] = []
+            if isImageEditRequest, let lastImage = lastGeneratedImage {
                 print("Image edit request detected in rewrite mode - including last generated image")
                 imagesToInclude.append(lastImage)
             }
+            // --- END CHANGED ---
             
             // Detect if content appears to be tabular/CSV data
             let containsTabsOrCommas = externalText.contains("\t") || 
@@ -601,6 +1124,7 @@ struct PopupView: View {
                     videos: appState.selectedVideos
                 )
                 
+                // --- REVERTED TO OLD LOGIC: Handle images OR text replacement separately ---
                 // Check if there are images in the response
                 if !aiResponse.images.isEmpty {
                     // Store the most recent generated image for potential future edits
@@ -610,16 +1134,21 @@ struct PopupView: View {
                     
                     // If there are images, display them in a ResponseWindow
                     DispatchQueue.main.async {
-                        // Add debug print
                         print("Rewrite: Creating response window with \(aiResponse.images.count) images")
                         
-                        let window = ResponseWindow(
-                            title: "AI Generated Image",
-                            content: aiResponse.text.isEmpty ? "Image successfully generated from prompt" : aiResponse.text,
+                        let responseView = ResponseView(
+                            content: aiResponse.text,
                             selectedText: externalText,
                             option: WritingOption.general,
                             images: aiResponse.images
                         )
+                        
+                        let window = ResponseWindow(
+                            with: responseView,
+                            title: "AI Generated Image",
+                            hasImages: !aiResponse.images.isEmpty
+                        )
+                        
                         WindowManager.shared.addResponseWindow(window)
                         
                         // Add a message to the chat including the image data
@@ -629,15 +1158,16 @@ struct PopupView: View {
                             images: aiResponse.images
                         ))
                         
-                        // Reactivate our app to show the window
+                        // Reactivate our app to show the image window
+                        print("Activating app to show image window.")
                         ourApp.activate(options: .activateIgnoringOtherApps)
                     }
                 } else if isImageEditRequest && lastGeneratedImage != nil {
                     // Handle the case where an image edit was requested but no image was returned
+                    // (This part matches the old logic too)
                     DispatchQueue.main.async {
                         print("Rewrite: Image edit request acknowledged but no modified image was returned")
                         
-                        // Provide feedback to user about the limitation
                         let limitationMessage = """
                         I attempted to create a modified version of the image based on your request, but wasn't able to generate a new image.
                         
@@ -657,10 +1187,12 @@ struct PopupView: View {
                         ))
                         
                         // Reactivate our app to show the message
+                        print("Activating app to show limitation message.")
                         ourApp.activate(options: .activateIgnoringOtherApps)
                     }
                 } else {
-                    // Step 4: Paste the rewritten text back with special handling for spreadsheets
+                    // --- THIS IS THE PURE TEXT REPLACEMENT PATH --- 
+                    print("DEBUG: Entered text replacement 'else' block.") // Log entry
                     DispatchQueue.main.async {
                         // Make sure target app is still available
                         if targetApp.isTerminated {
@@ -668,55 +1200,59 @@ struct PopupView: View {
                             NSPasteboard.general.clearContents()
                             NSPasteboard.general.setString(aiResponse.text, forType: .string)
                         } else {
+                            // Log the text that's about to be pasted
+                            if aiResponse.text.isEmpty {
+                                print("DEBUG: AI response text is EMPTY. Cannot paste.")
+                            } else {
+                                print("DEBUG: AI response text (length: \(aiResponse.text.count)) = '\(aiResponse.text.prefix(100))...'")
+                            }
+                            
                             // For spreadsheet apps, add a slightly longer delay before pasting
                             if isSpreadsheetApp {
-                                Thread.sleep(forTimeInterval: 0.2)
+                                // Use Thread.sleep like the old version for simplicity here
+                                Thread.sleep(forTimeInterval: 0.2) 
                             }
-                            AccessibilityHelper.replaceTextInFocusedElement(with: aiResponse.text)
+                            print("Attempting to replace text in focused element...")
+                            AccessibilityHelper.replaceTextInFocusedElement(with: aiResponse.text, targetApplication: targetApp)
                             
-                            // Reactivate our app after operation completes
-                            DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
-                                ourApp.activate(options: .activateIgnoringOtherApps)
-                            }
+                            // Leave focus with the origin app so the user can keep typing without re-clicking its dock icon.
+                            let appName = targetApp.localizedName ?? "target application"
+                            print("Keeping focus on \(appName) after rewrite.")
                         }
                     }
+                    // --- END PURE TEXT REPLACEMENT PATH ---
                 }
+                 // --- END REVERTED LOGIC ---
+
             } catch {
                 print("Error rewriting: \(error.localizedDescription)")
+                // Ensure our app is reactivated even on error
+                DispatchQueue.main.async {
+                    ourApp.activate(options: .activateIgnoringOtherApps)
+                }
             }
             
             isProcessing = false
         }
     }
     
-    /// Exports the chat conversation to a text file
-    private func exportChat() {
+    /// Copies the chat conversation to the clipboard
+    private func copyChatToClipboard() {
         // Format the conversation
         let conversationText = chatMessages.map { item in
             item.message // Each message already includes the role prefix
         }.joined(separator: "\n\n")
         
-        // Create date formatter for filename
-        let dateFormatter = DateFormatter()
-        dateFormatter.dateFormat = "yyyy-MM-dd-HHmm"
-        let dateString = dateFormatter.string(from: Date())
+        // Copy to clipboard
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(conversationText, forType: .string)
         
-        // Create save panel
-        let savePanel = NSSavePanel()
-        savePanel.allowedContentTypes = [.text]
-        savePanel.nameFieldStringValue = "conversation-\(dateString).txt"
-        savePanel.message = "Choose where to save the conversation"
-        savePanel.prompt = "Export"
-        
-        savePanel.begin { response in
-            if response == .OK, let url = savePanel.url {
-                do {
-                    try conversationText.write(to: url, atomically: true, encoding: .utf8)
-                } catch {
-                    print("Error saving conversation: \(error.localizedDescription)")
-                }
-            }
-        }
+        // Add a message to inform the user
+        chatMessages.append((
+            id: UUID(),
+            message: "System: Chat conversation copied to clipboard.",
+            images: []
+        ))
     }
     
     private func saveImage(_ imageData: Data) {
@@ -766,5 +1302,99 @@ struct PopupView: View {
                 }
             }
         }
+    }
+}
+
+// --- ADDED: New View for App Selection ---
+struct AppSelectionView: View {
+    @ObservedObject var appState: AppState
+    var onAppSelected: (AppInfo) -> Void
+
+    @State private var searchText: String = ""
+
+    var filteredApps: [AppInfo] {
+        if searchText.isEmpty {
+            return appState.runningApplications
+        } else {
+            return appState.runningApplications.filter {
+                $0.name.localizedCaseInsensitiveContains(searchText)
+            }
+        }
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text("Select Application Window to Capture")
+                .font(.headline)
+                .fontWeight(.bold)
+                .padding(.horizontal)
+                .padding(.top)
+
+            TextField("Search Applications", text: $searchText)
+                .textFieldStyle(RoundedBorderTextFieldStyle())
+                .padding(.horizontal)
+
+            List {
+                ForEach(filteredApps) { appInfo in
+                    Button(action: {
+                        onAppSelected(appInfo)
+                    }) {
+                        HStack {
+                            Image(nsImage: appInfo.icon ?? NSImage(systemSymbolName: "app", accessibilityDescription: nil)!)
+                                .resizable()
+                                .aspectRatio(contentMode: .fit)
+                                .frame(width: 24, height: 24)
+                            Text(appInfo.name)
+                            Spacer()
+                        }
+                        .contentShape(Rectangle()) // Make entire HStack tappable
+                    }
+                    .glassButtonStyle(variant: .v8) // Use plain style for list items
+                }
+            }
+            .listStyle(InsetListStyle()) // Modern list style
+            .frame(maxHeight: .infinity) // Allow list to expand
+
+            HStack {
+                Spacer()
+                Button("Cancel") {
+                    appState.isSelectingAppForCapture = false // Close selection view
+                }
+                .padding(.horizontal)
+                .padding(.bottom)
+            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(Color(.windowBackgroundColor).opacity(0.9)) // Match popup background
+        .transition(.opacity) // Add a subtle transition
+    }
+}
+// --- END ADDED ---
+
+// --- ADDED: Preview Provider for AppSelectionView ---
+struct AppSelectionView_Previews: PreviewProvider {
+    static var previews: some View {
+        // Create mock AppState for preview
+        let mockAppState = AppState.shared
+        mockAppState.runningApplications = [
+            AppInfo(id: 1, name: "Finder", icon: NSImage(systemSymbolName: "folder", accessibilityDescription: nil)!),
+            AppInfo(id: 2, name: "Safari", icon: NSImage(systemSymbolName: "safari", accessibilityDescription: nil)!),
+            AppInfo(id: 3, name: "Notes", icon: NSImage(systemSymbolName: "note.text", accessibilityDescription: nil)!),
+            AppInfo(id: 4, name: "Long Application Name Example", icon: NSImage(systemSymbolName: "app", accessibilityDescription: nil)!),
+        ]
+        mockAppState.isSelectingAppForCapture = true
+
+        return AppSelectionView(appState: mockAppState) { appInfo in
+            print("Preview selected: \(appInfo.name)")
+        }
+        .frame(width: 350, height: 400)
+    }
+}
+// --- END ADDED ---
+
+struct PopupView_Previews: PreviewProvider {
+    static var previews: some View {
+        let appState = AppState.shared
+// ... existing code ...
     }
 }

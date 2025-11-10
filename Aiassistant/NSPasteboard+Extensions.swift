@@ -31,6 +31,45 @@ extension NSPasteboard {
         return types?.contains(where: { imageTypes.contains($0) }) ?? false
     }
     
+    /// Attempts to load image data from the pasteboard either directly or via file URLs.
+    func readImage() -> Data? {
+        let imageTypes: [NSPasteboard.PasteboardType] = [
+            NSPasteboard.PasteboardType("public.png"),
+            NSPasteboard.PasteboardType("public.jpeg"),
+            NSPasteboard.PasteboardType("public.tiff"),
+            NSPasteboard.PasteboardType("com.compuserve.gif"),
+            NSPasteboard.PasteboardType("public.image")
+        ]
+        
+        for type in imageTypes {
+            if let data = self.data(forType: type) {
+                return data
+            }
+        }
+        
+        let imageUTTypes = [
+            UTType.png.identifier,
+            UTType.jpeg.identifier,
+            UTType.tiff.identifier,
+            UTType.gif.identifier,
+            UTType.image.identifier
+        ]
+        let options: [NSPasteboard.ReadingOptionKey: Any] = [
+            .urlReadingFileURLsOnly: true,
+            .urlReadingContentsConformToTypes: imageUTTypes
+        ]
+        
+        if let urls = self.readObjects(forClasses: [NSURL.self], options: options) as? [URL] {
+            for url in urls where url.isFileURL {
+                if let data = try? Data(contentsOf: url) {
+                    return data
+                }
+            }
+        }
+        
+        return nil
+    }
+    
     func readPDF() -> Data? {
         // First, try to obtain a PDF file URL using UTType.pdf.
         let pdfUTType = UTType.pdf.identifier
@@ -81,6 +120,55 @@ extension NSPasteboard {
         }
         
         return nil
+    }
+    
+    /// Attempts to load plain-text content from the pasteboard, including text files referenced by URLs.
+    func readPlainTextContent() -> (text: String, sourceURL: URL?)? {
+        let pasteboardString = self.string(forType: .string)
+        
+        let textUTTypes = [
+            UTType.plainText.identifier,
+            UTType.utf8PlainText.identifier,
+            UTType.utf16PlainText.identifier,
+            UTType.text.identifier,
+            "public.rtf",
+            "com.apple.traditional-mac-plain-text",
+            "public.html"
+        ]
+        let options: [NSPasteboard.ReadingOptionKey: Any] = [
+            .urlReadingFileURLsOnly: true,
+            .urlReadingContentsConformToTypes: textUTTypes
+        ]
+        
+        if let urls = self.readObjects(forClasses: [NSURL.self], options: options) as? [URL] {
+            for url in urls where url.isFileURL {
+                if let text = try? loadText(from: url) {
+                    return (text, url)
+                }
+            }
+        }
+        
+        // Handle case where Finder copies provide the file path as a plain string
+        if let potentialPath = pasteboardString,
+           FileManager.default.fileExists(atPath: potentialPath) {
+            let url = URL(fileURLWithPath: potentialPath)
+            if let text = try? loadText(from: url) {
+                return (text, url)
+            }
+        }
+
+        if let directString = pasteboardString, !directString.isEmpty {
+            return (directString, nil)
+        }
+        
+        return nil
+    }
+    
+    private func loadText(from url: URL) throws -> String {
+        if let string = try? String(contentsOf: url, encoding: .utf8) {
+            return string
+        }
+        return try String(contentsOf: url)
     }
 }
 
