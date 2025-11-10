@@ -15,6 +15,13 @@ A powerful native macOS application that brings AI assistance directly to your d
 - Secure - API keys stored securely in macOS Keychain
 - Accessibility-First - Full keyboard support and system-wide automation
 
+![CleanShot 2025-11-10 at 17 17 48@2x](https://github.com/user-attachments/assets/2bee115f-02dc-4db9-b882-5b628b0446f6)
+
+![CleanShot 2025-11-10 at 17 17 22@2x](https://github.com/user-attachments/assets/23022a80-b944-4deb-aa75-58dd912ae08f)
+
+![CleanShot 2025-11-10 at 17 17 01@2x](https://github.com/user-attachments/assets/f563811d-5317-4238-a3aa-efbc0dc8d99d)
+![CleanShot 2025-11-10 at 17 51 20@2x](https://github.com/user-attachments/assets/d6e0c54d-acb6-4888-906e-e77956d86e2f)
+
 ## Requirements
 
 - macOS 12.0 or later
