@@ -88,6 +88,7 @@ The full-featured chat interface supports multiple content types and provides ri
 
 **Text**
 - Simply type your question or prompt
+- Select text and type your question or prompt abou the selected text 
 - Markdown rendering for beautiful formatted responses
 
 **URLs**
@@ -285,7 +286,7 @@ Change models anytime in **Settings**:
 
 ---
 
-## ⚙️ Settings
+##  Settings
 
 Access settings via the menu bar icon or chat interface.
 
